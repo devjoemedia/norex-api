@@ -1,0 +1,94 @@
+import { Body, Controller, Delete, Get, Headers, HttpCode, Ip, Param, Post } from '@nestjs/common';
+import { Public } from '../../common/decorators/public.decorator';
+import { TenantId } from '../../common/decorators/tenant.decorator';
+import { AuthUser, CurrentUser } from '../../common/decorators/current-user.decorator';
+import { AuthService } from './auth.service';
+import { StaffAuthService } from './staff-auth.service';
+import { TokenService } from './token.service';
+import { RequestOtpDto } from './dto/request-otp.dto';
+import { VerifyOtpDto } from './dto/verify-otp.dto';
+import { RefreshDto } from './dto/refresh.dto';
+import { StaffLoginDto } from './dto/staff-login.dto';
+import { Verify2faDto } from './dto/verify-2fa.dto';
+
+@Controller('auth')
+export class AuthController {
+  constructor(
+    private readonly auth: AuthService,
+    private readonly staff: StaffAuthService,
+    private readonly tokens: TokenService,
+  ) {}
+
+  @Public()
+  @Post('otp/request')
+  @HttpCode(200)
+  async requestOtp(@TenantId() tenantId: string, @Body() dto: RequestOtpDto, @Ip() ip: string) {
+    await this.auth.requestOtp(tenantId, dto.phone, ip);
+    return { message: 'If the number is valid, a code has been sent.' };
+  }
+
+  @Public()
+  @Post('otp/verify')
+  @HttpCode(200)
+  async verifyOtp(
+    @TenantId() tenantId: string,
+    @Body() dto: VerifyOtpDto,
+    @Ip() ip: string,
+    @Headers('user-agent') userAgent: string,
+  ) {
+    return this.auth.verifyOtp(tenantId, dto.phone, dto.code, { ip, userAgent });
+  }
+
+  @Public()
+  @Post('refresh')
+  @HttpCode(200)
+  async refresh(
+    @TenantId() tenantId: string,
+    @Body() dto: RefreshDto,
+    @Ip() ip: string,
+    @Headers('user-agent') userAgent: string,
+  ) {
+    return this.auth.refresh(tenantId, dto.refreshToken, { ip, userAgent });
+  }
+
+  @Public()
+  @Post('staff/login')
+  @HttpCode(200)
+  async staffLogin(@TenantId() tenantId: string, @Body() dto: StaffLoginDto) {
+    return this.staff.login(tenantId, dto.email, dto.password);
+  }
+
+  @Public()
+  @Post('staff/2fa')
+  @HttpCode(200)
+  async staff2fa(
+    @TenantId() tenantId: string,
+    @Body() dto: Verify2faDto,
+    @Ip() ip: string,
+    @Headers('user-agent') userAgent: string,
+  ) {
+    return this.staff.verify2fa(
+      tenantId,
+      dto.challengeId,
+      { totp: dto.totp, recoveryCode: dto.recoveryCode },
+      { ip, userAgent },
+    );
+  }
+
+  @Post('logout')
+  @HttpCode(204)
+  async logout(@CurrentUser() user: AuthUser) {
+    if (user.sid) await this.auth.logout(user.sid, user.tenantId);
+  }
+
+  @Get('sessions')
+  async sessions(@CurrentUser() user: AuthUser) {
+    return this.tokens.list(user.id, user.tenantId);
+  }
+
+  @Delete('sessions/:id')
+  @HttpCode(204)
+  async revokeSession(@CurrentUser() user: AuthUser, @Param('id') id: string) {
+    await this.tokens.revokeOwned(id, user.id, user.tenantId);
+  }
+}

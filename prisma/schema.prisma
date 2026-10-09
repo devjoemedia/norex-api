@@ -1,0 +1,1660 @@
+// Norex platform — schema. Feature models are added per docs/03..13.
+// Every tenant-scoped model MUST carry `tenantId` and (in production) be protected
+// by RLS (see prisma/rls.sql and docs/01-security-and-multitenancy.md).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  customer
+  agent
+  approvals_officer
+  product_editor
+  country_manager
+  super_admin
+}
+
+enum FinanceFeeMode {
+  monthly_markup
+  flat_on_cash
+}
+
+enum UserStatus {
+  active
+  suspended
+}
+
+enum ApplicationType {
+  financing
+  lease
+  trade_in
+}
+
+enum ApplicationStatus {
+  draft
+  submitted
+  under_review
+  approved
+  info_requested
+  declined
+  agreement_pending
+  active
+  withdrawn
+}
+
+enum DeviceStatus {
+  draft
+  published
+  archived
+}
+
+enum MediaKind {
+  image
+  thumbnail
+}
+
+enum KycStatus {
+  pending
+  verified
+  rejected
+}
+
+enum KycDocKind {
+  id_front
+  id_back
+  selfie
+  proof_of_address
+  employment_letter
+}
+
+enum KycDocStatus {
+  uploaded
+  accepted
+  rejected
+}
+
+/// A country tenant (e.g. gambia.norex.com). NOT tenant-scoped itself.
+/// One tenant per country (docs/15-multi-country.md), plus the reserved `hq` tenant
+/// that only holds Super Admin accounts (isCountry = false, never business data).
+model Tenant {
+  id                     String    @id @default(uuid())
+  subdomain              String    @unique
+  name                   String
+  country                String // ISO 3166-1 alpha-2, e.g. GM, SL, GN, LR ("XX" for hq)
+  currency               String // ISO 4217, e.g. GMD, SLE, GNF, LRD
+  idType                 String // national ID label, e.g. "Gambia ID"
+  active                 Boolean   @default(true)
+  isCountry              Boolean   @default(true)
+  timezone               String    @default("UTC") // e.g. Africa/Banjul
+  dialCode               String? // e.g. +220
+  locale                 String    @default("en")
+  minorUnitDigits        Int       @default(2) // GNF = 0
+  launchedAt             DateTime?
+  /// Starting rate from GMD (target per 1 GMD × 1e6) + rounding step, set when the
+  /// country is created; pre-fills the one-time catalog clone. Never used for pricing.
+  startingFxPpm          Int?
+  startingRoundStepMinor Int?
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
+
+  domains TenantDomain[]
+
+  @@map("tenants")
+}
+
+/// Full website hosts that resolve to a tenant, e.g. norexguinea.com -> guinea.
+model TenantDomain {
+  id        String   @id @default(uuid())
+  tenantId  String
+  host      String   @unique // lowercased, no port
+  isPrimary Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@map("tenant_domains")
+}
+
+enum CloneJobStatus {
+  queued
+  running
+  done
+  failed
+}
+
+/// Setting up a new country's catalog: a source country's devices copied as drafts
+/// at a fixed integer FX rate (target units per 1 source unit × 1e6).
+model CatalogCloneJob {
+  id                String         @id @default(uuid())
+  sourceTenantId    String
+  targetTenantId    String
+  fxRatePpm         Int
+  roundingStepMinor Int
+  includeRates      Boolean        @default(true)
+  status            CloneJobStatus @default(queued)
+  devicesCreated    Int            @default(0)
+  error             String?
+  createdById       String?
+  createdAt         DateTime       @default(now())
+  finishedAt        DateTime?
+
+  @@index([targetTenantId, createdAt])
+  @@map("catalog_clone_jobs")
+}
+
+/// Platform user. Uniqueness is per tenant (same person = separate accounts per country).
+/// NOTE: `phone` is stored plaintext in this scaffold; production encrypts PII at rest
+/// with a blind index for lookup (docs/01).
+model User {
+  id            String     @id @default(uuid())
+  tenantId      String
+  phone         String? // customers; null for staff
+  email         String? // staff; optional for customers
+  fullName      String?
+  status        UserStatus @default(active)
+  isStaff       Boolean    @default(false)
+  passwordHash  String? // Argon2id, staff only
+  totpSecret    String? // encrypted (AES-256-GCM), staff only
+  totpEnabledAt DateTime?
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+
+  roles         UserRole[]
+  sessions      Session[]
+  challenges    StaffChallenge[]
+  recoveryCodes RecoveryCode[]
+
+  @@unique([tenantId, phone])
+  @@unique([tenantId, email])
+  @@map("users")
+}
+
+/// Short-lived challenge issued after the staff password step, before TOTP.
+model StaffChallenge {
+  id           String    @id @default(uuid())
+  tenantId     String
+  userId       String
+  purpose      String // login_2fa | enroll_2fa
+  enrollSecret String? // encrypted pending TOTP secret (enrollment only)
+  attempts     Int       @default(0)
+  expiresAt    DateTime
+  consumedAt   DateTime?
+  createdAt    DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, userId])
+  @@map("staff_challenges")
+}
+
+/// One-time TOTP recovery codes, stored only as keyed hashes.
+model RecoveryCode {
+  id        String    @id @default(uuid())
+  tenantId  String
+  userId    String
+  codeHash  String
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, userId])
+  @@map("recovery_codes")
+}
+
+model UserRole {
+  id       String  @id @default(uuid())
+  userId   String
+  tenantId String
+  role     Role
+  branchId String? // for agents
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, role])
+  @@index([tenantId, role])
+  @@map("user_roles")
+}
+
+/// OTP challenge. The code is stored only as a keyed hash; single-use, short TTL,
+/// attempt-limited. Redis can back this for scale (docs/02) — Postgres is the
+/// source of truth here.
+model OtpRequest {
+  id         String    @id @default(uuid())
+  tenantId   String
+  phone      String
+  codeHash   String
+  purpose    String // login | verify_phone
+  attempts   Int       @default(0)
+  expiresAt  DateTime
+  consumedAt DateTime?
+  ip         String?
+  createdAt  DateTime  @default(now())
+
+  @@index([tenantId, phone])
+  @@map("otp_requests")
+}
+
+/// Refresh-token session. `refreshHash` is the keyed hash of the current secret;
+/// rotation updates it and reuse of an old secret revokes the whole `familyId`.
+model Session {
+  id          String    @id @default(uuid()) // = sid embedded in the refresh token
+  tenantId    String
+  userId      String
+  familyId    String
+  refreshHash String
+  userAgent   String?
+  ip          String?
+  expiresAt   DateTime
+  revokedAt   DateTime?
+  createdAt   DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, userId])
+  @@index([familyId])
+  @@map("sessions")
+}
+
+/// A financing / lease / trade-in application. Pricing is snapshotted at submit so
+/// later catalog/rate edits never change a submitted application.
+model Application {
+  id            String            @id @default(uuid())
+  tenantId      String
+  reference     String? // stamped at submit, e.g. BNP-AB12C9
+  customerId    String
+  type          ApplicationType
+  status        ApplicationStatus @default(draft)
+  deviceId      String
+  planSnapshot  Json? // {term, deposit, monthly, ...} captured at submit
+  financeMonths Int?
+  leaseMonths   Int?
+  upfrontMinor  Int? // customer-chosen upfront (20–80% of cash); null = the plan's deposit
+  tradeInId     String?
+  amountMinor   Int?
+  currency      String?
+  reviewerId    String?
+  submittedAt   DateTime?
+  decidedAt     DateTime?
+  decidedById   String?
+  declineReason String?
+  source        String? // "self" (customer) | "admin" (created on behalf)
+  createdById   String? // admin/staff who created it when source = admin
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+
+  events    ApplicationEvent[]
+  documents ApplicationDocument[]
+
+  @@unique([tenantId, reference])
+  @@index([tenantId, status])
+  @@index([tenantId, customerId])
+  @@map("applications")
+}
+
+/// Append-only status-transition trail, written in the same transaction as the move.
+model ApplicationEvent {
+  id            String            @id @default(uuid())
+  tenantId      String
+  applicationId String
+  fromStatus    ApplicationStatus
+  toStatus      ApplicationStatus
+  actorId       String?
+  actorRole     String?
+  note          String?
+  createdAt     DateTime          @default(now())
+
+  application Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, applicationId])
+  @@map("application_events")
+}
+
+/// Links KYC / agreement documents (in object storage) to an application.
+model ApplicationDocument {
+  id            String   @id @default(uuid())
+  tenantId      String
+  applicationId String
+  documentId    String
+  kind          String
+  createdAt     DateTime @default(now())
+
+  application Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, applicationId])
+  @@map("application_documents")
+}
+
+/// Idempotency keys for retry-safe mutating operations (submit, decision).
+model IdempotencyKey {
+  id        String   @id @default(uuid())
+  tenantId  String
+  key       String
+  scope     String
+  resultRef String?
+  createdAt DateTime @default(now())
+
+  @@unique([tenantId, key])
+  @@map("idempotency_keys")
+}
+
+// ---------------- Catalog (docs/03) ----------------
+
+model Category {
+  id        String   @id @default(uuid())
+  tenantId  String
+  name      String
+  slug      String
+  parentId  String?
+  sortOrder Int      @default(0)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  devices Device[]
+
+  @@unique([tenantId, slug])
+  @@index([tenantId, parentId])
+  @@map("categories")
+}
+
+model Brand {
+  id        String   @id @default(uuid())
+  tenantId  String
+  name      String
+  slug      String
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  devices Device[]
+
+  @@unique([tenantId, slug])
+  @@map("brands")
+}
+
+/// A catalog device. Created `draft`, invisible to public reads until published.
+/// Specs are stored as structured JSON (docs/03 normalizes them; kept simple here).
+model Device {
+  id              String       @id @default(uuid())
+  tenantId        String
+  brandId         String
+  categoryId      String
+  name            String
+  slug            String
+  summary         String?
+  status          DeviceStatus @default(draft)
+  cashPriceMinor  Int
+  currency        String
+  financeEligible Boolean      @default(false)
+  leaseEligible   Boolean      @default(false)
+  tradeInEligible Boolean      @default(false)
+  featured        Boolean      @default(false)
+  promoLabel      String? // e.g. "Back to School" campaign; null = no promo
+  promoPriceMinor Int? // optional discounted price during the promo
+  specs           Json?
+  publishedAt     DateTime?
+  createdById     String?
+  updatedById     String?
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  brand    Brand           @relation(fields: [brandId], references: [id])
+  category Category        @relation(fields: [categoryId], references: [id])
+  variants DeviceVariant[]
+  media    DeviceMedia[]
+
+  @@unique([tenantId, slug])
+  @@index([tenantId, status])
+  @@index([tenantId, categoryId, status])
+  @@index([tenantId, leaseEligible, tradeInEligible])
+  @@map("devices")
+}
+
+model DeviceVariant {
+  id              String   @id @default(uuid())
+  tenantId        String
+  deviceId        String
+  sku             String
+  storage         String?
+  color           String?
+  priceDeltaMinor Int      @default(0)
+  stockQty        Int      @default(0)
+  isActive        Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  device Device @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, sku])
+  @@index([tenantId, deviceId])
+  @@map("device_variants")
+}
+
+/// Media metadata only — bytes live in private object storage, reached via signed
+/// URLs (docs/03). `s3Key` is tenant-prefixed and never a public origin path.
+model DeviceMedia {
+  id        String    @id @default(uuid())
+  tenantId  String
+  deviceId  String
+  s3Key     String
+  kind      MediaKind @default(image)
+  altText   String?
+  sortOrder Int       @default(0)
+  isPrimary Boolean   @default(false)
+  width     Int?
+  height    Int?
+  bytes     Int?
+  createdAt DateTime  @default(now())
+
+  device Device @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, deviceId, sortOrder])
+  @@map("device_media")
+}
+
+// ---------------- Financing / BNPL (docs/04) ----------------
+
+model FinancePlan {
+  id          String   @id @default(uuid())
+  tenantId    String
+  name        String
+  isActive    Boolean  @default(false)
+  createdById String?
+  updatedById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  terms FinancePlanTerm[]
+  rules FinanceEligibilityRule[]
+
+  @@index([tenantId, isActive])
+  @@map("finance_plans")
+}
+
+model FinancePlanTerm {
+  id               String         @id @default(uuid())
+  tenantId         String
+  planId           String
+  months           Int
+  depositPctBps    Int // basis points, e.g. 2000 = 20%
+  monthlyMarkupBps Int
+  /// monthly_markup: markup % per month on the financed amount (legacy).
+  /// flat_on_cash: iStore FLEX — fee = max(cash × premiumBps, minPremiumMinor).
+  feeMode          FinanceFeeMode @default(monthly_markup)
+  premiumBps       Int            @default(0) // flat_on_cash, e.g. 700 = 7%
+  minPremiumMinor  Int            @default(0) // flat_on_cash minimum fee
+  isActive         Boolean        @default(true)
+  sortOrder        Int            @default(0)
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  plan FinancePlan @relation(fields: [planId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, planId, months])
+  @@map("finance_plan_terms")
+}
+
+model FinanceEligibilityRule {
+  id             String   @id @default(uuid())
+  tenantId       String
+  planId         String
+  minPriceMinor  Int      @default(0)
+  maxPriceMinor  Int?
+  categoryId     String? // null = any category
+  requireInStock Boolean  @default(false)
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+
+  plan FinancePlan @relation(fields: [planId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, planId])
+  @@map("finance_eligibility_rules")
+}
+
+/// Append-only history of every deposit/markup/term edit (in addition to audit_log).
+model FinanceRateHistory {
+  id         String   @id @default(uuid())
+  tenantId   String
+  planTermId String
+  field      String
+  oldValue   String
+  newValue   String
+  actorId    String?
+  actorRole  String?
+  createdAt  DateTime @default(now())
+
+  @@index([tenantId, planTermId])
+  @@map("finance_rate_history")
+}
+
+// ---------------- KYC & verification (docs/08) ----------------
+
+/// Per-tenant allowed national-ID types + capture rules.
+model KycIdTypeConfig {
+  id             String   @id @default(uuid())
+  tenantId       String
+  code           String // ghana_card | gambia_id
+  label          String
+  numberRegex    String
+  requiresSelfie Boolean  @default(false)
+  active         Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@unique([tenantId, code])
+  @@map("kyc_id_type_config")
+}
+
+/// A customer's KYC profile. Sensitive fields are envelope-encrypted (ciphertext
+/// strings); only last4 + a per-tenant HMAC of the ID number are queryable.
+model KycProfile {
+  id                 String    @id @default(uuid())
+  tenantId           String
+  customerId         String
+  idTypeCode         String?
+  idNumberCipher     String?
+  idNumberLast4      String?
+  idNumberHash       String?
+  addressCipher      String?
+  employmentCipher   String?
+  status             KycStatus @default(pending)
+  reviewedById       String?
+  reviewedAt         DateTime?
+  rejectReason       String?
+  providerRef        String?
+  retentionExpiresAt DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  guarantor KycGuarantor?
+  documents KycDocument[]
+
+  @@unique([tenantId, customerId])
+  @@unique([tenantId, idNumberHash])
+  @@index([tenantId, status])
+  @@map("kyc_profiles")
+}
+
+model KycGuarantor {
+  id             String   @id @default(uuid())
+  tenantId       String
+  kycProfileId   String   @unique
+  fullNameCipher String
+  phoneCipher    String
+  relationship   String
+  addressCipher  String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  profile KycProfile @relation(fields: [kycProfileId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, kycProfileId])
+  @@map("kyc_guarantors")
+}
+
+model KycDocument {
+  id           String       @id @default(uuid())
+  tenantId     String
+  kycProfileId String
+  kind         KycDocKind
+  storageKey   String
+  contentType  String
+  sizeBytes    Int
+  sha256       String?
+  uploadedById String?
+  status       KycDocStatus @default(uploaded)
+  createdAt    DateTime     @default(now())
+
+  profile KycProfile @relation(fields: [kycProfileId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, kycProfileId, kind])
+  @@map("kyc_documents")
+}
+
+/// Append-only log of who viewed which ID data / document.
+model KycAccessLog {
+  id           String   @id @default(uuid())
+  tenantId     String
+  actorId      String?
+  actorRole    String?
+  kycProfileId String
+  documentId   String?
+  action       String // view_id_number | sign_url | download
+  ip           String?
+  requestId    String?
+  createdAt    DateTime @default(now())
+
+  @@index([tenantId, kycProfileId])
+  @@map("kyc_access_log")
+}
+
+/// Append-only audit trail. Written in the same transaction as the change.
+model AuditLog {
+  id        String   @id @default(uuid())
+  tenantId  String
+  actorId   String?
+  actorRole String?
+  action    String
+  entity    String
+  entityId  String?
+  before    Json?
+  after     Json?
+  ip        String?
+  requestId String?
+  createdAt DateTime @default(now())
+
+  @@index([tenantId, entity])
+  @@index([tenantId, createdAt])
+  @@map("audit_log")
+}
+
+// ---------------- Payments & repayments (docs/09) ----------------
+
+enum ScheduleKind {
+  financing
+  lease
+}
+
+enum ScheduleStatus {
+  active
+  completed
+  cancelled
+}
+
+enum InstallmentStatus {
+  due
+  paid
+  overdue
+}
+
+enum PaymentPurpose {
+  deposit
+  installment
+  lease_fee
+}
+
+enum PaymentChannel {
+  app
+  ussd
+}
+
+enum PaymentStatus {
+  initiated
+  pending
+  succeeded
+  failed
+  reversed
+}
+
+enum LedgerAccount {
+  customer_receivable
+  cash_momo
+  deposit_liability
+  refund
+}
+
+enum LedgerDirection {
+  debit
+  credit
+}
+
+/// A customer's repayment plan, generated from an application's plan snapshot on
+/// activation. The snapshot (not the live catalog) is the source of truth so later
+/// rate edits never alter an active schedule.
+model RepaymentSchedule {
+  id               String         @id @default(uuid())
+  tenantId         String
+  applicationId    String         @unique
+  customerId       String
+  kind             ScheduleKind
+  currency         String
+  totalAmountMinor Int
+  status           ScheduleStatus @default(active)
+  activatedAt      DateTime       @default(now())
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  installments Installment[]
+
+  @@index([tenantId, applicationId])
+  @@index([tenantId, customerId])
+  @@map("repayment_schedules")
+}
+
+model Installment {
+  id              String            @id @default(uuid())
+  tenantId        String
+  scheduleId      String
+  seq             Int // 0 = deposit (financing), 1..n monthly
+  isDeposit       Boolean           @default(false)
+  dueDate         DateTime
+  amountMinor     Int
+  paidAmountMinor Int               @default(0)
+  status          InstallmentStatus @default(due)
+  paidAt          DateTime?
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  schedule RepaymentSchedule @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+  payments Payment[]
+
+  @@unique([tenantId, scheduleId, seq])
+  @@index([tenantId, status, dueDate])
+  @@map("installments")
+}
+
+/// Payment initiation record. Money is only recognized when a signature-verified
+/// webhook confirms `succeeded`.
+model Payment {
+  id             String         @id @default(uuid())
+  tenantId       String
+  customerId     String
+  applicationId  String? // deposits reference the application before a schedule exists
+  scheduleId     String?
+  installmentId  String?
+  purpose        PaymentPurpose
+  provider       String
+  channel        PaymentChannel @default(app)
+  amountMinor    Int
+  currency       String
+  status         PaymentStatus  @default(initiated)
+  providerRef    String?
+  ussdCode       String?
+  idempotencyKey String
+  failureReason  String?
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  installment Installment?  @relation(fields: [installmentId], references: [id])
+  ledger      LedgerEntry[]
+  receipt     Receipt?
+
+  @@unique([tenantId, idempotencyKey])
+  @@index([tenantId, provider, providerRef])
+  @@index([tenantId, customerId])
+  @@map("payments")
+}
+
+/// Append-only, immutable double-entry ledger. Corrections are compensating entries,
+/// never updates or deletes.
+model LedgerEntry {
+  id            String          @id @default(uuid())
+  tenantId      String
+  account       LedgerAccount
+  direction     LedgerDirection
+  amountMinor   Int
+  currency      String
+  paymentId     String?
+  installmentId String?
+  memo          String?
+  createdAt     DateTime        @default(now())
+
+  payment Payment? @relation(fields: [paymentId], references: [id])
+
+  @@index([tenantId, account])
+  @@index([tenantId, paymentId])
+  @@map("ledger_entries")
+}
+
+model Receipt {
+  id         String   @id @default(uuid())
+  tenantId   String
+  paymentId  String   @unique
+  number     String
+  issuedAt   DateTime @default(now())
+  storageKey String
+  createdAt  DateTime @default(now())
+
+  payment Payment @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, number])
+  @@map("receipts")
+}
+
+/// Dedupe + audit of inbound provider callbacks. A re-delivered event never
+/// double-posts to the ledger.
+model WebhookEvent {
+  id                String    @id @default(uuid())
+  tenantId          String
+  provider          String
+  eventId           String
+  signatureVerified Boolean   @default(false)
+  payloadHash       String
+  result            String?
+  processedAt       DateTime?
+  createdAt         DateTime  @default(now())
+
+  @@unique([tenantId, provider, eventId])
+  @@map("webhook_events")
+}
+
+/// Per-tenant enabled providers. Raw secrets are never stored: the webhook secret is
+/// envelope-encrypted at rest (KMS-managed in production).
+model ProviderConfig {
+  id                  String   @id @default(uuid())
+  tenantId            String
+  provider            String
+  webhookSecretCipher String
+  active              Boolean  @default(true)
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  @@unique([tenantId, provider])
+  @@map("provider_configs")
+}
+
+// ---------------- Notifications (docs/10) ----------------
+
+enum NotificationEventKey {
+  otp
+  application_status
+  payment_reminder
+  payment_receipt
+  trade_in_quote_ready
+  marketing
+}
+
+enum NotificationChannel {
+  email
+  sms
+  whatsapp
+  push
+}
+
+enum NotificationCategory {
+  transactional
+  marketing
+}
+
+enum NotificationStatus {
+  queued
+  sent
+  delivered
+  failed
+  dead
+  suppressed
+}
+
+enum PushPlatform {
+  fcm
+  apns
+}
+
+/// Per-tenant, per-event, per-channel, per-locale message template. Edits create a new
+/// version; the active one is resolved at send time (docs/10).
+model NotificationTemplate {
+  id                   String               @id @default(uuid())
+  tenantId             String
+  eventKey             NotificationEventKey
+  channel              NotificationChannel
+  locale               String // BCP-47, e.g. en, fr
+  category             NotificationCategory
+  subject              String? // email only
+  body                 String // logic-less {{var}} template, sanitized on write
+  whatsappTemplateName String?
+  version              Int                  @default(1)
+  isActive             Boolean              @default(true)
+  updatedById          String?
+  createdAt            DateTime             @default(now())
+  updatedAt            DateTime             @updatedAt
+
+  @@unique([tenantId, eventKey, channel, locale, version])
+  @@index([tenantId, eventKey, channel, locale])
+  @@map("notification_templates")
+}
+
+/// Per-tenant sender config. Secrets are never stored here — only a pointer into the
+/// secret manager (secretRef).
+model ChannelProvider {
+  id           String              @id @default(uuid())
+  tenantId     String
+  channel      NotificationChannel
+  provider     String // ses|sendgrid|twilio|africastalking|meta_whatsapp|fcm|apns
+  senderConfig Json // from-address / sender-id / phone / app-id — no secrets
+  secretRef    String?
+  isPrimary    Boolean             @default(true)
+  isActive     Boolean             @default(true)
+  createdAt    DateTime            @default(now())
+  updatedAt    DateTime            @updatedAt
+
+  @@index([tenantId, channel, isPrimary])
+  @@map("channel_providers")
+}
+
+/// Per-user channel/category preferences. Transactional rows are forced opted-in.
+model NotificationPreference {
+  id        String               @id @default(uuid())
+  tenantId  String
+  userId    String
+  channel   NotificationChannel
+  category  NotificationCategory
+  optedIn   Boolean              @default(true)
+  updatedAt DateTime             @updatedAt
+
+  @@unique([tenantId, userId, channel, category])
+  @@map("notification_preferences")
+}
+
+model PushToken {
+  id          String       @id @default(uuid())
+  tenantId    String
+  userId      String
+  platform    PushPlatform
+  tokenCipher String // encrypted at rest
+  tokenHash   String // for dedupe without storing the plaintext
+  deviceId    String?
+  lastSeenAt  DateTime     @default(now())
+  revokedAt   DateTime?
+  createdAt   DateTime     @default(now())
+
+  @@unique([tenantId, tokenHash])
+  @@index([tenantId, userId])
+  @@map("push_tokens")
+}
+
+/// Delivery record. Never stores the plaintext recipient or full body — only a hash of
+/// the recipient and a pointer to the resolved template.
+model Notification {
+  id                String               @id @default(uuid())
+  tenantId          String
+  userId            String?
+  eventKey          NotificationEventKey
+  channel           NotificationChannel
+  category          NotificationCategory
+  recipientHash     String
+  locale            String
+  templateId        String?
+  status            NotificationStatus   @default(queued)
+  provider          String?
+  providerMessageId String?
+  attempts          Int                  @default(0)
+  errorCode         String?
+  idempotencyKey    String?
+  scheduledAt       DateTime?
+  sentAt            DateTime?
+  deliveredAt       DateTime?
+  createdAt         DateTime             @default(now())
+
+  @@unique([tenantId, idempotencyKey])
+  @@index([tenantId, userId])
+  @@index([tenantId, status])
+  @@index([tenantId, eventKey, createdAt])
+  @@index([provider, providerMessageId])
+  @@map("notifications")
+}
+
+// ---------------- Lease (docs/05) ----------------
+
+enum LeaseStatus {
+  active
+  returned
+  upgraded
+}
+
+enum LeaseReturnGrade {
+  good
+  fair
+  damaged
+}
+
+/// Per-tenant lease-rate config. The active config's terms drive the monthly-fee quote.
+model LeaseRateConfig {
+  id          String   @id @default(uuid())
+  tenantId    String
+  name        String
+  isActive    Boolean  @default(false)
+  createdById String?
+  updatedById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  terms LeaseRateTerm[]
+
+  @@index([tenantId, isActive])
+  @@map("lease_rate_configs")
+}
+
+/// A fixed 6/12-month lease term. Fee is either fixed (monthlyFeeMinor) or a bps of
+/// cash price (monthlyFeeBps) — never both; the calculator enforces exactly one.
+model LeaseRateTerm {
+  id              String   @id @default(uuid())
+  tenantId        String
+  configId        String
+  months          Int
+  monthlyFeeBps   Int? // basis points of cash price
+  monthlyFeeMinor Int? // fixed fee in minor units
+  categoryId      String? // null = any category
+  minPriceMinor   Int      @default(0)
+  maxPriceMinor   Int?
+  isActive        Boolean  @default(true)
+  sortOrder       Int      @default(0)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  config LeaseRateConfig @relation(fields: [configId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, configId, months, categoryId])
+  @@index([tenantId, configId])
+  @@map("lease_rate_terms")
+}
+
+/// Versioned lease agreement text. A lease snapshots the active version at creation.
+model LeaseTermsTemplate {
+  id                String   @id @default(uuid())
+  tenantId          String
+  version           Int
+  usageTerms        String
+  returnConditions  String
+  noOwnershipNotice String
+  isActive          Boolean  @default(true)
+  createdById       String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@unique([tenantId, version])
+  @@index([tenantId, isActive])
+  @@map("lease_terms_templates")
+}
+
+/// A live lease. Fee/term/terms-version are snapshotted at creation so later rate or
+/// template edits never change an active lease.
+model Lease {
+  id                     String      @id @default(uuid())
+  tenantId               String
+  reference              String? // LSE-XXXXX, stamped at creation
+  customerId             String
+  applicationId          String
+  deviceId               String
+  variantId              String?
+  months                 Int
+  monthlyFeeMinor        Int
+  currency               String
+  termsVersion           Int
+  status                 LeaseStatus @default(active)
+  startAt                DateTime
+  endAt                  DateTime
+  returnedAt             DateTime?
+  successorApplicationId String? // set on upgrade
+  createdAt              DateTime    @default(now())
+  updatedAt              DateTime    @updatedAt
+
+  events  LeaseEvent[]
+  returns LeaseReturn[]
+
+  @@unique([tenantId, reference])
+  @@unique([tenantId, applicationId])
+  @@index([tenantId, status])
+  @@index([tenantId, customerId])
+  @@map("leases")
+}
+
+/// Append-only lease status-transition trail, written in the same tx as the move.
+model LeaseEvent {
+  id         String      @id @default(uuid())
+  tenantId   String
+  leaseId    String
+  fromStatus LeaseStatus
+  toStatus   LeaseStatus
+  actorId    String?
+  actorRole  String?
+  note       String?
+  createdAt  DateTime    @default(now())
+
+  lease Lease @relation(fields: [leaseId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, leaseId])
+  @@map("lease_events")
+}
+
+/// Return-condition assessment. A fee adjustment is surfaced to payments (docs/09),
+/// never auto-charged here.
+model LeaseReturn {
+  id                 String           @id @default(uuid())
+  tenantId           String
+  leaseId            String
+  conditionGrade     LeaseReturnGrade
+  assessedById       String?
+  assessmentNotes    String?
+  feeAdjustmentMinor Int?
+  photos             Json? // [{ s3Key, ... }]
+  assessedAt         DateTime         @default(now())
+
+  lease Lease @relation(fields: [leaseId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, leaseId])
+  @@map("lease_returns")
+}
+
+/// Append-only lease rate/term edit log (mirrors finance_rate_history).
+model LeaseRateHistory {
+  id         String   @id @default(uuid())
+  tenantId   String
+  rateTermId String
+  field      String
+  oldValue   String
+  newValue   String
+  actorId    String?
+  actorRole  String?
+  createdAt  DateTime @default(now())
+
+  @@index([tenantId, rateTermId])
+  @@map("lease_rate_history")
+}
+
+// ---------------- Trade-in (docs/06) ----------------
+
+enum TradeInStatus {
+  draft
+  submitted
+  quoted
+  accepted
+  expired
+}
+
+enum TradeInQuoteStatus {
+  active
+  superseded
+}
+
+enum TradeInPhotoKind {
+  front
+  back
+  screen
+  other
+}
+
+/// Per-tenant configurable set of old-device condition options for the intake form.
+model TradeInConditionOption {
+  id          String   @id @default(uuid())
+  tenantId    String
+  code        String // like_new | good | fair | poor
+  label       String
+  description String?
+  sortOrder   Int      @default(0)
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([tenantId, code])
+  @@map("trade_in_condition_options")
+}
+
+/// A trade-in request: a target device + the customer's old device for staff valuation.
+model TradeIn {
+  id              String        @id @default(uuid())
+  tenantId        String
+  reference       String? // TRD-XXXXX, stamped at submit
+  customerId      String
+  targetDeviceId  String
+  targetVariantId String?
+  oldBrand        String
+  oldModel        String
+  oldStorage      String?
+  conditionCode   String?
+  accessories     Json? // { charger, box, earphones, ... }
+  notes           String?
+  status          TradeInStatus @default(draft)
+  submittedAt     DateTime?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  photos TradeInPhoto[]
+  quotes TradeInQuote[]
+  events TradeInEvent[]
+
+  @@unique([tenantId, reference])
+  @@index([tenantId, status])
+  @@index([tenantId, customerId])
+  @@map("trade_ins")
+}
+
+model TradeInPhoto {
+  id        String           @id @default(uuid())
+  tenantId  String
+  tradeInId String
+  s3Key     String
+  kind      TradeInPhotoKind @default(other)
+  sortOrder Int              @default(0)
+  bytes     Int?
+  createdAt DateTime         @default(now())
+
+  tradeIn TradeIn @relation(fields: [tradeInId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, tradeInId])
+  @@map("trade_in_photos")
+}
+
+/// A staff manual valuation. One `active` quote per trade-in; re-valuation supersedes.
+model TradeInQuote {
+  id              String             @id @default(uuid())
+  tenantId        String
+  tradeInId       String
+  quoteValueMinor Int
+  topUpMinor      Int?
+  currency        String
+  valuedById      String?
+  valuationNotes  String?
+  expiresAt       DateTime
+  status          TradeInQuoteStatus @default(active)
+  createdAt       DateTime           @default(now())
+
+  tradeIn TradeIn @relation(fields: [tradeInId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, tradeInId])
+  @@map("trade_in_quotes")
+}
+
+model TradeInEvent {
+  id         String        @id @default(uuid())
+  tenantId   String
+  tradeInId  String
+  fromStatus TradeInStatus
+  toStatus   TradeInStatus
+  actorId    String?
+  actorRole  String?
+  note       String?
+  createdAt  DateTime      @default(now())
+
+  tradeIn TradeIn @relation(fields: [tradeInId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, tradeInId])
+  @@map("trade_in_events")
+}
+
+// ---------------- Content & CMS (docs/11) ----------------
+
+enum ContentType {
+  homepage_section
+  blog_post
+  review
+  faq
+  promotion
+  nav_menu
+  site_config
+}
+
+enum ContentStatus {
+  draft
+  scheduled
+  published
+  archived
+}
+
+enum ContentRefType {
+  plan
+  lease_rate
+  trade_rate
+  agent
+  branch
+}
+
+/// An editable content entry. Only a `published` entry with a pinned
+/// `currentVersionId` is visible to public reads.
+model ContentEntry {
+  id               String        @id @default(uuid())
+  tenantId         String
+  type             ContentType
+  slug             String?
+  locale           String        @default("en")
+  title            String?
+  status           ContentStatus @default(draft)
+  currentVersionId String? // pinned live version
+  publishAt        DateTime?
+  publishedAt      DateTime?
+  createdById      String?
+  updatedById      String?
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+
+  versions   ContentVersion[]
+  media      ContentMedia[]
+  references ContentReference[]
+
+  @@index([tenantId, type, status])
+  @@index([tenantId, type, slug, locale])
+  @@index([tenantId, status, publishAt])
+  @@map("content_entries")
+}
+
+/// Append-only content snapshot. Publishing pins one version; edits never mutate live.
+model ContentVersion {
+  id        String   @id @default(uuid())
+  tenantId  String
+  entryId   String
+  version   Int
+  body      Json // sanitized structured content + rich-text HTML
+  meta      Json? // SEO/OG, tags
+  authorId  String?
+  createdAt DateTime @default(now())
+
+  entry ContentEntry @relation(fields: [entryId], references: [id], onDelete: Cascade)
+
+  @@unique([entryId, version])
+  @@index([tenantId, entryId])
+  @@map("content_versions")
+}
+
+model ContentMedia {
+  id           String   @id @default(uuid())
+  tenantId     String
+  entryId      String?
+  s3Key        String
+  kind         String   @default("image")
+  width        Int?
+  height       Int?
+  alt          String?
+  uploadedById String?
+  createdAt    DateTime @default(now())
+
+  entry ContentEntry? @relation(fields: [entryId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId, entryId])
+  @@map("content_media")
+}
+
+/// Editable site config key/values. Rate/agent values are stored as { ref } pointers
+/// resolved from the owning module, never duplicated.
+model SiteConfig {
+  tenantId    String
+  key         String
+  value       Json
+  updatedById String?
+  updatedAt   DateTime @updatedAt
+
+  @@id([tenantId, key])
+  @@map("site_config")
+}
+
+/// Links a content entry to a record owned by financing/lease/trade/agents; resolved
+/// at read time so content always reflects the owning module's current data.
+model ContentReference {
+  id       String         @id @default(uuid())
+  tenantId String
+  entryId  String
+  refType  ContentRefType
+  refId    String
+
+  entry ContentEntry @relation(fields: [entryId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, entryId])
+  @@map("content_references")
+}
+
+// ---------------- Agents & fulfilment (docs/12) ----------------
+
+enum BranchType {
+  store
+  pickup_point
+  partner
+}
+
+enum BranchStatus {
+  active
+  inactive
+}
+
+enum FulfilmentStatus {
+  pending
+  fulfilled
+  cancelled
+}
+
+enum IdVerifyMethod {
+  kyc_match
+  manual_override
+}
+
+/// A per-tenant branch. Agents are assigned via user_roles.branchId (docs/02).
+model Branch {
+  id        String       @id @default(uuid())
+  tenantId  String
+  name      String
+  type      BranchType   @default(store)
+  city      String?
+  region    String?
+  address   String?
+  lat       Float?
+  lng       Float?
+  hours     Json? // { mon: {open, close}, ... }
+  phone     String?
+  status    BranchStatus @default(active)
+  managerId String? // assigned Branch Admin (User id)
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+
+  @@index([tenantId, status])
+  @@index([tenantId, city])
+  @@index([tenantId, region])
+  @@map("branches")
+}
+
+/// One device hand-over per application. Marking `fulfilled` activates the repayment
+/// schedule (docs/09) and moves the application to `active` (docs/07), transactionally.
+model Fulfilment {
+  id               String           @id @default(uuid())
+  tenantId         String
+  applicationId    String
+  branchId         String
+  agentId          String?
+  deviceId         String?
+  serial           String?
+  imei             String?
+  idVerified       Boolean          @default(false)
+  idVerifiedMethod IdVerifyMethod?
+  status           FulfilmentStatus @default(pending)
+  fulfilledAt      DateTime?
+  notes            String?
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  @@unique([tenantId, applicationId])
+  @@index([tenantId, branchId, status])
+  @@index([tenantId, agentId])
+  @@map("fulfilments")
+}
+
+// ---------------- Reporting & analytics (docs/13) ----------------
+
+enum ExportFormat {
+  csv
+  pdf
+}
+
+enum ExportStatus {
+  queued
+  processing
+  ready
+  failed
+  expired
+}
+
+/// Daily rolled-up application aggregates. Aggregates only — no customer identifiers.
+model ReportRollupApplications {
+  tenantId              String
+  day                   DateTime // date grain (UTC midnight)
+  type                  ApplicationType
+  status                ApplicationStatus
+  count                 Int               @default(0)
+  approvalRate          Float             @default(0)
+  avgTimeToDecisionSecs Int               @default(0)
+
+  @@id([tenantId, day, type, status])
+  @@map("report_rollup_applications")
+}
+
+model ReportRollupFinance {
+  tenantId                 String
+  day                      DateTime
+  currency                 String
+  revenueCollectedMinor    Int      @default(0)
+  repaymentsCollectedMinor Int      @default(0)
+  arrearsOverdueMinor      Int      @default(0)
+  overdueCount             Int      @default(0)
+
+  @@id([tenantId, day, currency])
+  @@map("report_rollup_finance")
+}
+
+model ReportRollupInventory {
+  tenantId       String
+  day            DateTime
+  deviceId       String
+  inStock        Int      @default(0)
+  reserved       Int      @default(0)
+  fulfilledCount Int      @default(0)
+
+  @@id([tenantId, day, deviceId])
+  @@map("report_rollup_inventory")
+}
+
+model ReportRollupLeaseReturns {
+  tenantId            String
+  day                 DateTime
+  returnsDueCount     Int      @default(0)
+  returnsOverdueCount Int      @default(0)
+
+  @@id([tenantId, day])
+  @@map("report_rollup_lease_returns")
+}
+
+/// An async export job. The worker writes the file to private storage and yields a
+/// short-lived signed URL; aggregates only, never raw PII.
+model ExportJob {
+  id            String       @id @default(uuid())
+  tenantId      String
+  requestedById String
+  reportKey     String
+  format        ExportFormat
+  params        Json?
+  status        ExportStatus @default(queued)
+  objectKey     String?
+  expiresAt     DateTime?
+  error         String?
+  createdAt     DateTime     @default(now())
+  completedAt   DateTime?
+
+  @@index([tenantId, requestedById])
+  @@index([tenantId, status])
+  @@map("export_jobs")
+}
+
+// ---------------- Device units & remote lock (docs/features/12, 22) ----------------
+// The serialized, financed handset behind a catalog Device SKU. `Fulfilment` already
+// stamps imei/serial at hand-over; a DeviceUnit is the PERSISTENT asset that outlives
+// that event and carries lifecycle + remote-lock state through the loan. Shared by
+// Device Lock (12), Collections & Recovery (11), Inventory & Dispatch (08), Insurance
+// (13) and the Agent POS flow (21). Uses loose FK ids (matching Fulfilment/Branch) so
+// the change is additive — no back-relations added to existing models.
+
+enum DeviceUnitStatus {
+  in_stock // received into central inventory, not yet allocated
+  allocated // reserved to an outlet / application
+  dispatched // in transit to an outlet, awaiting pickup
+  active // handed over to the customer, on an active loan
+  returned // returned (lease end / cancellation)
+  repossessed // recovered from a defaulting customer
+  written_off // lost / stolen / unrecoverable (insurance claim territory)
+}
+
+enum DeviceLockState {
+  unlocked
+  soft_locked // usage restricted / persistent banner (early delinquency)
+  hard_locked // device rendered unusable (severe default)
+}
+
+enum LockProvider {
+  none
+  knox // Samsung Knox Guard
+  android_pay_trigger // Android Enterprise / pay-trigger MDM
+  other
+}
+
+enum DeviceEnrollmentStatus {
+  not_enrolled
+  pending
+  enrolled
+  failed
+}
+
+enum DeviceLockAction {
+  enroll
+  soft_lock
+  hard_lock
+  unlock
+  reenroll
+}
+
+enum LockActionSource {
+  manual // staff-initiated from the portal
+  automation // system rule (e.g. missed-payment job)
+  pos // enrolled at checkout (Agent POS step 4)
+}
+
+model DeviceUnit {
+  id            String  @id @default(uuid())
+  tenantId      String
+  imei          String
+  serial        String?
+  deviceId      String // catalog Device (SKU)
+  variantId     String? // catalog DeviceVariant
+  customerId    String? // current owner (User); null while in stock
+  applicationId String? // financing application it was disbursed under
+  fulfilmentId  String? // the hand-over event that created it
+  branchId      String? // current / originating outlet
+
+  status           DeviceUnitStatus       @default(in_stock)
+  lockState        DeviceLockState        @default(unlocked)
+  lockProvider     LockProvider           @default(none)
+  enrollment       DeviceEnrollmentStatus @default(not_enrolled)
+  externalDeviceId String? // provider's device identifier
+  activatedAt      DateTime? // handed over to the customer
+  lastLockAt       DateTime?
+  lastLockAction   DeviceLockAction?
+  notes            String?
+  createdAt        DateTime               @default(now())
+  updatedAt        DateTime               @updatedAt
+
+  lockEvents DeviceLockEvent[]
+
+  @@unique([tenantId, imei])
+  @@index([tenantId, status])
+  @@index([tenantId, lockState])
+  @@index([tenantId, customerId])
+  @@index([tenantId, applicationId])
+  @@index([tenantId, branchId])
+  @@map("device_units")
+}
+
+/// Append-only audit of every lock / enrollment action on a unit (mirrors AuditLog).
+/// Each Device Lock action in the portal writes one of these, with the provider result.
+model DeviceLockEvent {
+  id            String           @id @default(uuid())
+  tenantId      String
+  deviceUnitId  String
+  action        DeviceLockAction
+  fromState     DeviceLockState?
+  toState       DeviceLockState?
+  source        LockActionSource @default(manual)
+  reason        String?
+  actorId       String? // staff who triggered it (null for automation)
+  actorRole     String?
+  provider      LockProvider     @default(none)
+  providerRef   String? // provider request / correlation id
+  success       Boolean          @default(true)
+  failureReason String?
+  createdAt     DateTime         @default(now())
+
+  unit DeviceUnit @relation(fields: [deviceUnitId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, deviceUnitId])
+  @@index([tenantId, action])
+  @@map("device_lock_events")
+}
