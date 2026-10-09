@@ -87,6 +87,7 @@ export class ApplicationsService {
         app.deviceId,
         app.financeMonths,
         app.upfrontMinor ?? undefined,
+        app.variantId,
       );
       return {
         planSnapshot: snapshot as unknown as Prisma.InputJsonValue,
@@ -102,6 +103,7 @@ export class ApplicationsService {
         app.tenantId,
         app.deviceId,
         app.leaseMonths as number,
+        app.variantId,
       );
       return {
         planSnapshot: snapshot as unknown as Prisma.InputJsonValue,

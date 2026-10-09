@@ -1,5 +1,7 @@
 import { Body, Controller, Delete, Get, Headers, HttpCode, Ip, Param, Post } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { Public } from '../../common/decorators/public.decorator';
+import { RATE_LIMITS } from '../../common/http/rate-limits';
 import { TenantId } from '../../common/decorators/tenant.decorator';
 import { AuthUser, CurrentUser } from '../../common/decorators/current-user.decorator';
 import { AuthService } from './auth.service';
@@ -20,6 +22,7 @@ export class AuthController {
   ) {}
 
   @Public()
+  @Throttle(RATE_LIMITS.otp)
   @Post('otp/request')
   @HttpCode(200)
   async requestOtp(@TenantId() tenantId: string, @Body() dto: RequestOtpDto, @Ip() ip: string) {
@@ -28,6 +31,7 @@ export class AuthController {
   }
 
   @Public()
+  @Throttle(RATE_LIMITS.otp)
   @Post('otp/verify')
   @HttpCode(200)
   async verifyOtp(
@@ -40,6 +44,7 @@ export class AuthController {
   }
 
   @Public()
+  @Throttle(RATE_LIMITS.tokenRefresh)
   @Post('refresh')
   @HttpCode(200)
   async refresh(
@@ -52,6 +57,7 @@ export class AuthController {
   }
 
   @Public()
+  @Throttle(RATE_LIMITS.staffSignIn)
   @Post('staff/login')
   @HttpCode(200)
   async staffLogin(@TenantId() tenantId: string, @Body() dto: StaffLoginDto) {
@@ -59,6 +65,7 @@ export class AuthController {
   }
 
   @Public()
+  @Throttle(RATE_LIMITS.staffSignIn)
   @Post('staff/2fa')
   @HttpCode(200)
   async staff2fa(

@@ -1,0 +1,46 @@
+# Render Blueprint for norex-api (docs/16 · deploy notes in README "Deploy on Render").
+# Render → New → Blueprint → pick this repo. Secrets marked `sync: false` are asked for
+# on first deploy; set them in the dashboard afterwards.
+services:
+  - type: web
+    name: norex-api
+    runtime: node
+    plan: starter # pre-deploy commands need a paid instance
+    region: frankfurt
+    # Dev deps (Nest CLI, Prisma CLI) are needed to build, even with NODE_ENV=production.
+    buildCommand: npm ci --include=dev && npx prisma generate && npm run build
+    # The project uses `prisma db push` (no migrations yet); it refuses data-loss changes.
+    preDeployCommand: npx prisma db push --skip-generate
+    startCommand: npm run start:prod
+    healthCheckPath: /api/health/ready
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NODE_VERSION
+        value: "20"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: norex-db
+          property: connectionString
+      # Never rotate these two after launch: they key OTPs, KYC hashes and encrypted data.
+      - key: JWT_SECRET
+        generateValue: true
+      - key: ENCRYPTION_KEY
+        generateValue: true
+      # Same value as NOREX_API_KEY on every website Worker.
+      - key: WEB_INTAKE_KEY
+        sync: false
+      # Admin portal origin(s), comma-separated, e.g. https://admin.norexgambia.com
+      - key: CORS_ORIGINS
+        sync: false
+      - key: TRUST_PROXY_HOPS
+        value: "1"
+      - key: THROTTLE_LIMIT
+        value: "120"
+
+databases:
+  - name: norex-db
+    plan: basic-256mb
+    region: frankfurt
+    databaseName: norex
+    user: norex

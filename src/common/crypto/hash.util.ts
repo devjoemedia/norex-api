@@ -1,4 +1,4 @@
-import { createHmac, randomBytes, randomInt, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, randomBytes, randomInt, timingSafeEqual } from 'node:crypto';
 
 // Keyed hash for tokens/OTP codes (not passwords — staff passwords use Argon2id
 // in the staff-login slice). The key is the app secret; values are peppered.
@@ -15,6 +15,13 @@ export function safeEqualHex(a: string, b: string): boolean {
   const ba = Buffer.from(a, 'hex');
   const bb = Buffer.from(b, 'hex');
   return ba.length === bb.length && timingSafeEqual(ba, bb);
+}
+
+// Constant-time compare of two secrets of any length (hashing evens the lengths).
+export function safeEqualText(a: string, b: string): boolean {
+  const ha = createHash('sha256').update(a).digest();
+  const hb = createHash('sha256').update(b).digest();
+  return timingSafeEqual(ha, hb);
 }
 
 // Cryptographically-random numeric OTP of the given length.

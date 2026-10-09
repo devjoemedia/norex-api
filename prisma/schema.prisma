@@ -273,6 +273,7 @@ model Application {
   type          ApplicationType
   status        ApplicationStatus @default(draft)
   deviceId      String
+  variantId     String? // chosen storage size; prices the plan when set
   planSnapshot  Json? // {term, deposit, monthly, ...} captured at submit
   financeMonths Int?
   leaseMonths   Int?
@@ -287,11 +288,13 @@ model Application {
   declineReason String?
   source        String? // "self" (customer) | "admin" (created on behalf)
   createdById   String? // admin/staff who created it when source = admin
+  intakeCipher  String? // encrypted website form (payout, fulfilment, consents, files) when source = web
   createdAt     DateTime          @default(now())
   updatedAt     DateTime          @updatedAt
 
   events    ApplicationEvent[]
   documents ApplicationDocument[]
+  files     ApplicationFile[]
 
   @@unique([tenantId, reference])
   @@index([tenantId, status])
@@ -330,6 +333,25 @@ model ApplicationDocument {
 
   @@index([tenantId, applicationId])
   @@map("application_documents")
+}
+
+/// Photos sent with a website application (ID front/back, selfie, trade-in phone).
+/// Stand-in until object storage is live (docs/16): bytes sit in Postgres, capped per
+/// file, and are served only to staff.
+model ApplicationFile {
+  id            String   @id @default(uuid())
+  tenantId      String
+  applicationId String
+  kind          String // id_front | id_back | selfie | trade_in_photo
+  contentType   String
+  sizeBytes     Int
+  data          Bytes
+  createdAt     DateTime @default(now())
+
+  application Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, applicationId])
+  @@map("application_files")
 }
 
 /// Idempotency keys for retry-safe mutating operations (submit, decision).

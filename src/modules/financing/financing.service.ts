@@ -123,8 +123,9 @@ export class FinancingService {
     deviceId: string,
     months: number,
     upfrontMinor?: number,
+    variantId?: string | null,
   ): Promise<FinanceSnapshot> {
-    const { device, term } = await this.resolve(tenantId, deviceId, months);
+    const { device, term } = await this.resolve(tenantId, deviceId, months, variantId);
     this.checkUpfront(device, term, upfrontMinor);
     const o = this.option(device, term, upfrontMinor);
     return {
@@ -145,8 +146,9 @@ export class FinancingService {
     tenantId: string,
     deviceId: string,
     months: number,
+    variantId?: string | null,
   ): Promise<{ device: DevicePricing; term: FinancePlanTerm }> {
-    const device = await this.catalog.getDeviceForPricing(tenantId, deviceId);
+    const device = await this.catalog.getDeviceForPricing(tenantId, deviceId, variantId);
     if (!device || !device.financeEligible) {
       throw new BadRequestException('Device is not available for financing');
     }

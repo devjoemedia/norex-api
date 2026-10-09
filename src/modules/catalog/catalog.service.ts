@@ -204,15 +204,18 @@ export class CatalogService {
 
   // Pricing snapshot for financing/lease (docs/04, docs/05). Returns the published
   // device's price, category, eligibility and stock, or null when not usable.
-  async getDeviceForPricing(tenantId: string, deviceId: string) {
+  // A variantId prices the chosen storage size (base price + its delta).
+  async getDeviceForPricing(tenantId: string, deviceId: string, variantId?: string | null) {
     const d = await this.prisma.device.findFirst({
       where: { id: deviceId, tenantId, status: DeviceStatus.published },
       include: { variants: { where: { isActive: true } } },
     });
     if (!d) return null;
+    const variant = variantId ? d.variants.find((v) => v.id === variantId) : undefined;
+    if (variantId && !variant) return null;
     return {
       id: d.id,
-      cashPriceMinor: d.cashPriceMinor,
+      cashPriceMinor: d.cashPriceMinor + (variant?.priceDeltaMinor ?? 0),
       currency: d.currency,
       categoryId: d.categoryId,
       financeEligible: d.financeEligible,

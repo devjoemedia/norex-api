@@ -2,7 +2,7 @@ import { ClassSerializerInterceptor, MiddlewareConsumer, Module, NestModule } fr
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { APP_FILTER, APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { JwtModule } from '@nestjs/jwt';
-import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
+import { ThrottlerModule } from '@nestjs/throttler';
 import { LoggerModule } from 'nestjs-pino';
 
 import { validateEnv } from './config/configuration';
@@ -26,9 +26,11 @@ import { FulfilmentModule } from './modules/fulfilment/fulfilment.module';
 import { ReportingModule } from './modules/reporting/reporting.module';
 import { AdminModule } from './modules/admin/admin.module';
 import { CountriesModule } from './modules/countries/countries.module';
+import { WebIntakeModule } from './modules/web-intake/web-intake.module';
 import { PaymentsModule } from './modules/payments/payments.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
+import { AppThrottlerGuard } from './common/guards/app-throttler.guard';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { TenantGuard } from './common/guards/tenant.guard';
 import { RolesGuard } from './common/guards/roles.guard';
@@ -94,10 +96,11 @@ import { AllTenantsGuard } from './common/guards/all-tenants.guard';
     ReportingModule,
     AdminModule,
     CountriesModule,
+    WebIntakeModule,
   ],
   providers: [
     // Guard chain order: throttle -> authenticate -> tenant match -> role.
-    { provide: APP_GUARD, useClass: ThrottlerGuard },
+    { provide: APP_GUARD, useClass: AppThrottlerGuard },
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_GUARD, useClass: TenantGuard },
     { provide: APP_GUARD, useClass: RolesGuard },

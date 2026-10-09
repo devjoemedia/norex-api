@@ -245,6 +245,52 @@ export class KycService {
     return { completeness: await this.isComplete(tenantId, customerId) };
   }
 
+  // Encrypts any applicant JSON with the KYC key (e.g. a website application's extras).
+  sealJson(o: unknown): string {
+    return this.encJson(o);
+  }
+
+  // Website guest intake (docs/16): saves what the form collected without the
+  // signed-in ID-format gate. The profile stays pending until staff review it.
+  async upsertFromIntake(
+    tenantId: string,
+    customerId: string,
+    input: {
+      idTypeCode: string;
+      idNumber: string;
+      address?: Record<string, unknown>;
+      employment?: Record<string, unknown>;
+      guarantor?: GuarantorDto;
+    },
+  ) {
+    const idNumber = input.idNumber.trim();
+    const fields = {
+      idTypeCode: input.idTypeCode,
+      idNumberCipher: this.encStr(idNumber),
+      idNumberLast4: idNumber.slice(-4),
+      idNumberHash: keyedHash(this.idHashKey(tenantId), idNumber),
+      ...(input.address ? { addressCipher: this.encJson(input.address) } : {}),
+      ...(input.employment ? { employmentCipher: this.encJson(input.employment) } : {}),
+      status: KycStatus.pending,
+      reviewedById: null,
+      reviewedAt: null,
+      rejectReason: null,
+    };
+    try {
+      await this.prisma.kycProfile.upsert({
+        where: { tenantId_customerId: { tenantId, customerId } },
+        create: { tenantId, customerId, ...fields },
+        update: fields,
+      });
+    } catch (e) {
+      if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
+        throw new ConflictException('This ID number is already registered to another phone number');
+      }
+      throw e;
+    }
+    if (input.guarantor) await this.putGuarantor(tenantId, customerId, input.guarantor);
+  }
+
   private validateDoc(contentType: string, bytes: number): string {
     const ext = DOC_TYPES[contentType];
     if (!ext) throw new BadRequestException('Unsupported document type (png, jpeg, webp, pdf)');

@@ -15,6 +15,7 @@ const schema = z.object({
   JWT_REFRESH_TTL: z.coerce.number().int().positive().default(2592000),
 
   CORS_ORIGINS: z.string().default(''),
+  TRUST_PROXY_HOPS: z.coerce.number().int().min(0).default(1),
   THROTTLE_TTL: z.coerce.number().int().positive().default(60),
   THROTTLE_LIMIT: z.coerce.number().int().positive().default(120),
 
@@ -27,6 +28,10 @@ const schema = z.object({
   // At-rest encryption key (>=32 chars). Falls back to JWT_SECRET in the scaffold;
   // production uses a KMS-managed key.
   ENCRYPTION_KEY: z.string().min(32).optional(),
+
+  // Shared secret the website's server sends as X-Web-Key to submit guest
+  // applications (docs/16). Unset = the intake endpoint refuses every request.
+  WEB_INTAKE_KEY: z.string().min(24).optional(),
 });
 
 export type AppConfig = z.infer<typeof schema>;

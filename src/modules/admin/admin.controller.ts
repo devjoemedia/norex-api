@@ -1,4 +1,16 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  ParseUUIDPipe,
+  Patch,
+  Post,
+  Res,
+  StreamableFile,
+} from '@nestjs/common';
+import type { Response } from 'express';
 import { AllowAllTenants } from '../../common/decorators/all-tenants.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
@@ -30,6 +42,20 @@ export class AdminController {
   @Get('applications/:id')
   applicationDetail(@TenantId() tenantId: string, @Param('id') id: string) {
     return this.admin.applicationDetail(tenantId, id);
+  }
+
+  // Photo bytes for the portal, fetched with the staff bearer token (no public URL).
+  @Roles(Role.SuperAdmin, Role.CountryManager, Role.ApprovalsOfficer, Role.Agent)
+  @Get('applications/:id/files/:fileId')
+  async applicationFile(
+    @TenantId() tenantId: string,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('fileId', ParseUUIDPipe) fileId: string,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const file = await this.admin.applicationFile(tenantId, id, fileId);
+    res.set({ 'Cache-Control': 'private, no-store' });
+    return new StreamableFile(file.data, { type: file.contentType, disposition: 'inline' });
   }
 
   @Roles(Role.SuperAdmin, Role.CountryManager, Role.ApprovalsOfficer, Role.Agent)

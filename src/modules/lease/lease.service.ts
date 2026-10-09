@@ -126,8 +126,13 @@ export class LeaseService {
 
   // Immutable snapshot consumed by application submit (docs/07) and, at activation,
   // by the payments schedule generator (docs/09).
-  async buildSnapshot(tenantId: string, deviceId: string, months: number): Promise<LeaseSnapshot> {
-    const { device, term } = await this.resolve(tenantId, deviceId, months);
+  async buildSnapshot(
+    tenantId: string,
+    deviceId: string,
+    months: number,
+    variantId?: string | null,
+  ): Promise<LeaseSnapshot> {
+    const { device, term } = await this.resolve(tenantId, deviceId, months, variantId);
     const o = this.option(device, term);
     const template = await this.activeTermsTemplate(tenantId);
     if (!template) throw new BadRequestException('No active lease terms template');
@@ -148,9 +153,10 @@ export class LeaseService {
     tenantId: string,
     deviceId: string,
     months: number,
+    variantId?: string | null,
   ): Promise<{ device: DevicePricing; term: LeaseRateTerm }> {
     if (!isLeaseTerm(months)) throw new BadRequestException('Lease term must be 6 or 12 months');
-    const device = await this.catalog.getDeviceForPricing(tenantId, deviceId);
+    const device = await this.catalog.getDeviceForPricing(tenantId, deviceId, variantId);
     if (!device || !device.leaseEligible || !device.inStock) {
       throw new BadRequestException('Device is not available for lease');
     }

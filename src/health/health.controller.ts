@@ -1,8 +1,11 @@
 import { Controller, Get } from '@nestjs/common';
+import { SkipThrottle } from '@nestjs/throttler';
 import { HealthCheck, HealthCheckError, HealthCheckService } from '@nestjs/terminus';
 import { Public } from '../common/decorators/public.decorator';
 import { PrismaService } from '../database/prisma.service';
 
+// Render's health checks poll this; they must never be rate limited.
+@SkipThrottle()
 @Controller('health')
 export class HealthController {
   constructor(

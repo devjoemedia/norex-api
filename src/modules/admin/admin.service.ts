@@ -101,7 +101,7 @@ export class AdminService {
     const tenant = await this.tenant(tenantId);
     const currency = app.currency ?? currencyOf(tenant);
 
-    const [customer, device, kyc, fulfilment, pastApplications, activeLoans, schedules] =
+    const [customer, device, kyc, fulfilment, pastApplications, activeLoans, schedules, files] =
       await Promise.all([
         this.prisma.user.findUnique({ where: { id: app.customerId } }),
         this.prisma.device.findUnique({
@@ -117,6 +117,12 @@ export class AdminService {
         this.prisma.installment.findMany({
           where: { tenantId, schedule: { customerId: app.customerId } },
           select: { status: true },
+        }),
+        // Metadata only; the bytes come from applicationFile() one photo at a time.
+        this.prisma.applicationFile.findMany({
+          where: { tenantId, applicationId: app.id },
+          select: { id: true, kind: true, contentType: true, sizeBytes: true, createdAt: true },
+          orderBy: { createdAt: 'asc' },
         }),
       ]);
 
@@ -173,6 +179,7 @@ export class AdminService {
         : null,
       timeline: buildTimeline(app.status, app.submittedAt, app.decidedAt),
       scores: { approvalProbability, risk, creditScore, similarApplications },
+      files: files.map((f) => ({ ...f, createdAt: f.createdAt.toISOString() })),
       snapshot: {
         pastApplications: Math.max(0, pastApplications - 1),
         activeLoans,
@@ -181,6 +188,16 @@ export class AdminService {
         tier,
       },
     };
+  }
+
+  // A website photo (ID, selfie, trade-in). Every view is audited: it's identity data.
+  async applicationFile(tenantId: string, applicationId: string, fileId: string) {
+    const file = await this.prisma.applicationFile.findFirst({
+      where: { id: fileId, tenantId, applicationId },
+    });
+    if (!file) throw new NotFoundException('File not found');
+    await this.audit(tenantId, 'application.file_viewed', 'application_file', file.id);
+    return file;
   }
 
   // --- User detail --------------------------------------------------------
