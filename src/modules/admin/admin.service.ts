@@ -5,8 +5,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import * as argon2 from 'argon2';
-import { generateOneTimePassword } from '../../common/crypto/one-time-password';
+import { StaffInviteService } from '../auth/staff-invite.service';
 import { currencyOf } from '../../common/tenancy/currency';
 import { assertCanGrant, canGrant } from '../../common/tenancy/staff-roles';
 import {
@@ -36,6 +35,7 @@ export class AdminService {
     private readonly storage: StorageService,
     private readonly kycProfiles: KycService,
     private readonly config: ConfigService,
+    private readonly invites: StaffInviteService,
   ) {}
 
   private imageUrl(specs: unknown): string | null {
@@ -1256,7 +1256,6 @@ export class AdminService {
     if (email && (await this.prisma.user.findFirst({ where: { tenantId, email } }))) {
       throw new ConflictException('A user with that email already exists in this country');
     }
-    const oneTimePassword = isStaff ? generateOneTimePassword() : null;
     const user = await this.prisma.user.create({
       data: {
         tenantId,
@@ -1266,14 +1265,33 @@ export class AdminService {
         isStaff,
         status: dto.status === 'suspended' ? 'suspended' : 'active',
         permissions: adminAccess ?? undefined,
-        passwordHash: oneTimePassword
-          ? await argon2.hash(oneTimePassword, { type: argon2.argon2id })
-          : null,
         roles: { create: [{ tenantId, role }] },
       },
     });
     await this.audit(tenantId, 'user.created', 'user', user.id);
-    return { id: user.id, ...(oneTimePassword ? { email, oneTimePassword } : {}) };
+    // Staff get an invite link (emailed when mail is set up); a suspended account
+    // gets one later, from "Reset sign-in".
+    if (isStaff && email && user.status === 'active') {
+      return { id: user.id, email, invite: await this.inviteStaff(tenantId, user, 'new') };
+    }
+    return { id: user.id };
+  }
+
+  private async inviteStaff(
+    tenantId: string,
+    user: { id: string; email: string | null; fullName: string | null },
+    reason: 'new' | 'reset',
+  ) {
+    const actorId = this.actorId();
+    // The inviter may live in HQ, outside this country's RLS scope; then no name.
+    const inviter = actorId
+      ? await this.prisma.user.findFirst({ where: { id: actorId }, select: { fullName: true } })
+      : null;
+    return this.invites.invite(
+      tenantId,
+      { id: user.id, email: user.email!, fullName: user.fullName },
+      { invitedBy: inviter?.fullName ?? null, reason },
+    );
   }
 
   // A delegated admin lives in HQ (they work across countries) and needs at least
@@ -1290,35 +1308,16 @@ export class AdminService {
     return access;
   }
 
-  // New one-time password; clears TOTP + recovery codes and signs the user out
-  // everywhere. For staff created before invites existed, or a lost phone.
+  // New invite link; the old password, two-factor and recovery codes stop working
+  // and the user is signed out everywhere. For a lost phone or a forgotten password.
   async resetSignIn(tenantId: string, id: string, actorRoles: string[]) {
     const user = await this.manageableUser(tenantId, id, actorRoles);
     if (!user.isStaff) throw new BadRequestException('Customers sign in with a phone code');
     if (!user.email) throw new BadRequestException('Add an email address first');
-    const oneTimePassword = await this.issueSignIn(user.id);
+    if (user.status === 'suspended') throw new BadRequestException('Reactivate this user first');
+    const invite = await this.inviteStaff(tenantId, user, 'reset');
     await this.audit(tenantId, 'user.sign_in_reset', 'user', id);
-    return { id, email: user.email, oneTimePassword };
-  }
-
-  private async issueSignIn(userId: string): Promise<string> {
-    const oneTimePassword = generateOneTimePassword();
-    await this.prisma.$transaction([
-      this.prisma.user.update({
-        where: { id: userId },
-        data: {
-          passwordHash: await argon2.hash(oneTimePassword, { type: argon2.argon2id }),
-          totpSecret: null,
-          totpEnabledAt: null,
-        },
-      }),
-      this.prisma.recoveryCode.deleteMany({ where: { userId } }),
-      this.prisma.session.updateMany({
-        where: { userId, revokedAt: null },
-        data: { revokedAt: new Date() },
-      }),
-    ]);
-    return oneTimePassword;
+    return { id, email: user.email, invite };
   }
 
   async updateUser(
@@ -1372,10 +1371,11 @@ export class AdminService {
       await this.prisma.user.update({ where: { id }, data: { isStaff: role !== Role.customer } });
     }
     await this.audit(tenantId, 'user.updated', 'user', id);
-    // A customer promoted to staff has no password yet: issue one, shown once.
+    // A customer promoted to staff has no sign-in yet: send them an invite.
     if (becomesStaff && !before.passwordHash) {
-      const oneTimePassword = await this.issueSignIn(id);
-      return { id, email: dto.email ?? before.email, oneTimePassword };
+      const email = dto.email ?? before.email;
+      const invite = await this.inviteStaff(tenantId, { ...before, email }, 'new');
+      return { id, email, invite };
     }
     return { id };
   }

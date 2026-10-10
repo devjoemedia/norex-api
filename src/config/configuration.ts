@@ -36,6 +36,14 @@ const schema = z.object({
   // Where device photos are served (the website, e.g. https://norexgambia.com). The
   // catalog stores website paths like /devices/x.png; the portal needs full URLs.
   DEVICE_IMAGE_BASE_URL: z.string().url().optional(),
+
+  // Staff invites (docs/20): links point at the admin portal, e.g.
+  // https://admin.norexgambia.com. Unset = the first https CORS origin is used.
+  PORTAL_URL: z.string().url().optional(),
+  // Resend, for invite emails. Unset = invites aren't emailed; the inviter copies the
+  // link instead. EMAIL_FROM must be on a domain verified in Resend.
+  RESEND_API_KEY: z.string().min(10).optional(),
+  EMAIL_FROM: z.string().min(3).default('Norex <no-reply@norexgambia.com>'),
 });
 
 export type AppConfig = z.infer<typeof schema>;

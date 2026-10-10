@@ -167,6 +167,8 @@ model User {
   passwordHash  String? // Argon2id, staff only
   totpSecret    String? // encrypted (AES-256-GCM), staff only
   totpEnabledAt DateTime?
+  /// When the staff member last chose their own password; null = must choose one at sign-in.
+  passwordSetAt DateTime?
   /// Delegated admins only: { area: "view" | "manage" } (src/common/auth/admin-permissions.ts)
   permissions   Json?
   createdAt     DateTime   @default(now())
@@ -187,8 +189,9 @@ model StaffChallenge {
   id           String    @id @default(uuid())
   tenantId     String
   userId       String
-  purpose      String // login_2fa | enroll_2fa
+  purpose      String // login_2fa | enroll_2fa | set_password | invite
   enrollSecret String? // encrypted pending TOTP secret (enrollment only)
+  tokenHash    String? // invites only: keyed hash of the emailed link's token
   attempts     Int       @default(0)
   expiresAt    DateTime
   consumedAt   DateTime?
@@ -197,6 +200,7 @@ model StaffChallenge {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([tenantId, userId])
+  @@index([tokenHash])
   @@map("staff_challenges")
 }
 

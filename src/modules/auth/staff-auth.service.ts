@@ -13,6 +13,8 @@ import { AuditService } from '../../common/audit/audit.service';
 import { keyedHash, randomTokenHex } from '../../common/crypto/hash.util';
 import { decryptSecret, encryptSecret } from '../../common/crypto/secret-box';
 import { TokenPair, TokenService } from './token.service';
+import { StaffInviteService } from './staff-invite.service';
+import { assertStaffPassword } from '../../common/auth/staff-password';
 
 authenticator.options = { window: 1 }; // tolerate ~30s clock drift
 
@@ -26,8 +28,11 @@ interface Ctx {
 }
 
 type LoginChallenge =
+  | { status: 'set_password'; challengeId: string }
   | { status: 'enroll_2fa'; challengeId: string; secret: string; otpauthUrl: string }
   | { status: '2fa_required'; challengeId: string };
+
+type StaffUser = { id: string; email: string | null; totpEnabledAt: Date | null };
 
 export interface StaffAuthResult extends TokenPair {
   user: {
@@ -49,6 +54,7 @@ export class StaffAuthService {
     private readonly config: ConfigService,
     private readonly tokens: TokenService,
     private readonly audit: AuditService,
+    private readonly invites: StaffInviteService,
   ) {}
 
   private encKey(): string {
@@ -71,7 +77,25 @@ export class StaffAuthService {
     }
     if (user.status === 'suspended') throw new ForbiddenException('Account suspended');
 
-    const expiresAt = new Date(Date.now() + CHALLENGE_TTL_SECONDS * 1000);
+    // A password someone else chose (an old one-time password, or one set by an
+    // admin or a script) is replaced by the staff member's own before anything else.
+    if (!user.passwordSetAt) {
+      const challenge = await this.prisma.staffChallenge.create({
+        data: { tenantId, userId: user.id, purpose: 'set_password', expiresAt: this.expiry() },
+      });
+      return { status: 'set_password', challengeId: challenge.id };
+    }
+    return this.secondFactor(tenantId, user);
+  }
+
+  private expiry(): Date {
+    return new Date(Date.now() + CHALLENGE_TTL_SECONDS * 1000);
+  }
+
+  // After the password: set up two-factor the first time, otherwise ask for a code.
+  private async secondFactor(tenantId: string, user: StaffUser): Promise<LoginChallenge> {
+    const expiresAt = this.expiry();
+    const email = user.email ?? '';
 
     if (!user.totpEnabledAt) {
       const secret = authenticator.generateSecret();
@@ -109,7 +133,13 @@ export class StaffAuthService {
     }
 
     const challenge = await this.prisma.staffChallenge.findFirst({
-      where: { id: challengeId, tenantId, consumedAt: null, expiresAt: { gt: new Date() } },
+      where: {
+        id: challengeId,
+        tenantId,
+        purpose: { in: ['login_2fa', 'enroll_2fa'] },
+        consumedAt: null,
+        expiresAt: { gt: new Date() },
+      },
     });
     if (!challenge) throw new UnauthorizedException('Invalid or expired challenge');
     if (challenge.attempts >= MAX_2FA_ATTEMPTS) {
@@ -198,6 +228,126 @@ export class StaffAuthService {
       user: { id: user.id, email: user.email, fullName: user.fullName, roles, permissions },
       recoveryCodes,
     };
+  }
+
+  // Step after sign-in with a password someone else chose: the staff member picks
+  // their own, then continues to two-factor.
+  async setPassword(
+    tenantId: string,
+    challengeId: string,
+    password: string,
+    ctx: Ctx,
+  ): Promise<LoginChallenge> {
+    const challenge = await this.prisma.staffChallenge.findFirst({
+      where: {
+        id: challengeId,
+        tenantId,
+        purpose: 'set_password',
+        consumedAt: null,
+        expiresAt: { gt: new Date() },
+      },
+      include: { user: true },
+    });
+    if (!challenge) throw new UnauthorizedException('This step expired. Sign in again.');
+    const user = challenge.user;
+    if (user.status === 'suspended') throw new ForbiddenException('Account suspended');
+    assertStaffPassword(password, user.email);
+    if (
+      user.passwordHash &&
+      (await argon2.verify(user.passwordHash, password).catch(() => false))
+    ) {
+      throw new BadRequestException('Choose a new password, not the one you were given');
+    }
+    await this.storePassword(user.id, password);
+    await this.consume(challenge.id);
+    await this.audit.write(tenantId, {
+      actorId: user.id,
+      action: 'staff.password_set',
+      entity: 'user',
+      entityId: user.id,
+      ip: ctx.ip,
+    });
+    return this.secondFactor(tenantId, user);
+  }
+
+  /** What the accept-invite page shows before the person chooses a password. */
+  async inspectInvite(tenantId: string, token: string) {
+    const invite = await this.invites.find(tenantId, token);
+    const tenant = await this.prisma.tenant.findUnique({ where: { id: tenantId } });
+    return {
+      email: invite.user.email,
+      fullName: invite.user.fullName,
+      signInTo: tenant?.isCountry ? tenant.name : 'Norex HQ',
+      expiresAt: invite.expiresAt.toISOString(),
+    };
+  }
+
+  // Invite link -> own password -> two-factor setup (the next step returned here).
+  async acceptInvite(
+    tenantId: string,
+    token: string,
+    password: string,
+    ctx: Ctx,
+  ): Promise<LoginChallenge> {
+    const invite = await this.invites.find(tenantId, token);
+    const user = invite.user;
+    assertStaffPassword(password, user.email);
+    await this.storePassword(user.id, password);
+    await this.consume(invite.id);
+    await this.audit.write(tenantId, {
+      actorId: user.id,
+      action: 'staff.invite_accepted',
+      entity: 'user',
+      entityId: user.id,
+      ip: ctx.ip,
+    });
+    return this.secondFactor(tenantId, { ...user, totpEnabledAt: null });
+  }
+
+  // Signed-in change. Other sessions are signed out; this one stays.
+  async changePassword(
+    actor: { id: string; tenantId: string; sid?: string },
+    currentPassword: string,
+    newPassword: string,
+    ctx: Ctx,
+  ): Promise<void> {
+    const user = await this.prisma.user.findFirst({
+      where: { id: actor.id, tenantId: actor.tenantId, isStaff: true },
+    });
+    if (!user?.passwordHash) throw new BadRequestException('This account has no password');
+    if (!(await argon2.verify(user.passwordHash, currentPassword).catch(() => false))) {
+      throw new BadRequestException('Your current password is not right');
+    }
+    if (currentPassword === newPassword) {
+      throw new BadRequestException('Choose a password you are not using now');
+    }
+    assertStaffPassword(newPassword, user.email);
+    await this.storePassword(user.id, newPassword);
+    await this.prisma.session.updateMany({
+      where: {
+        userId: user.id,
+        revokedAt: null,
+        ...(actor.sid ? { id: { not: actor.sid } } : {}),
+      },
+      data: { revokedAt: new Date() },
+    });
+    await this.audit.write(actor.tenantId, {
+      actorId: user.id,
+      action: 'staff.password_changed',
+      entity: 'user',
+      entityId: user.id,
+      ip: ctx.ip,
+    });
+  }
+
+  private async storePassword(userId: string, password: string) {
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: {
+        passwordHash: await argon2.hash(password, { type: argon2.argon2id }),
+        passwordSetAt: new Date(),
+      },
+    });
   }
 
   private consume(id: string) {

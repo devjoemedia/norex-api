@@ -6,10 +6,9 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { Prisma, Role, Tenant } from '@prisma/client';
-import * as argon2 from 'argon2';
 import { AuditService, AuditEvent } from '../../common/audit/audit.service';
 import { asSystem, withTenant } from '../../common/context/request-context';
-import { generateOneTimePassword } from '../../common/crypto/one-time-password';
+import { StaffInviteService } from '../auth/staff-invite.service';
 import { TenantMiddleware } from '../../common/middleware/tenant.middleware';
 import { normalizeHost } from '../../common/tenancy/resolve-tenant';
 import { PrismaService } from '../../database/prisma.service';
@@ -48,6 +47,7 @@ export class CountriesService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
+    private readonly invites: StaffInviteService,
   ) {}
 
   async list(actor: Actor) {
@@ -245,8 +245,8 @@ export class CountriesService {
     });
   }
 
-  // Invite = a staff account with a one-time password shown once to the Super Admin;
-  // the manager enrols TOTP at first login (StaffAuthService).
+  // Invite = a staff account plus a single-use link (emailed when mail is set up) to
+  // choose a password and set up two-factor (docs/20).
   async createManager(actor: Actor, slug: string, dto: CreateCountryManagerDto) {
     // RLS: the country's users are only visible inside its scope.
     return this.inCountry(slug, async (tenant) => {
@@ -262,7 +262,6 @@ export class CountriesService {
       ) {
         throw new BadRequestException(`Phone must use the ${tenant.dialCode} dial code`);
       }
-      const oneTimePassword = generateOneTimePassword();
       const user = await this.prisma.user.create({
         data: {
           tenantId: tenant.id,
@@ -270,7 +269,6 @@ export class CountriesService {
           phone: dto.phone ?? null,
           fullName: dto.fullName,
           isStaff: true,
-          passwordHash: await argon2.hash(oneTimePassword, { type: argon2.argon2id }),
           roles: { create: [{ tenantId: tenant.id, role: Role.country_manager }] },
         },
       });
@@ -280,13 +278,12 @@ export class CountriesService {
         entityId: user.id,
         after: { email, country: tenant.subdomain },
       });
-      return {
-        id: user.id,
-        email,
-        country: tenant.subdomain,
-        oneTimePassword,
-        note: 'Shown once. The manager signs in with it, then sets up two-factor authentication.',
-      };
+      const invite = await this.invites.invite(
+        tenant.id,
+        { id: user.id, email, fullName: dto.fullName },
+        { invitedBy: null, reason: 'new' },
+      );
+      return { id: user.id, email, country: tenant.subdomain, invite };
     });
   }
 

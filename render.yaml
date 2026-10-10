@@ -44,6 +44,13 @@ services:
       # The Gambia website serves device photos for the portal.
       - key: DEVICE_IMAGE_BASE_URL
         value: https://norexgambia.com
+      # Staff invites (docs/20): links open the portal; emails go through Resend.
+      - key: PORTAL_URL
+        value: https://admin.norexgambia.com
+      - key: RESEND_API_KEY
+        sync: false
+      - key: EMAIL_FROM
+        value: Norex <no-reply@norexgambia.com>
       - key: TRUST_PROXY_HOPS
         value: "1"
       - key: THROTTLE_LIMIT

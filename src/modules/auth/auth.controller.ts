@@ -11,6 +11,12 @@ import { RequestOtpDto } from './dto/request-otp.dto';
 import { VerifyOtpDto } from './dto/verify-otp.dto';
 import { RefreshDto } from './dto/refresh.dto';
 import { StaffLoginDto } from './dto/staff-login.dto';
+import {
+  AcceptInviteDto,
+  ChangePasswordDto,
+  InviteTokenDto,
+  SetPasswordDto,
+} from './dto/staff-password.dto';
 import { Verify2faDto } from './dto/verify-2fa.dto';
 
 @Controller('auth')
@@ -80,6 +86,43 @@ export class AuthController {
       { totp: dto.totp, recoveryCode: dto.recoveryCode },
       { ip, userAgent },
     );
+  }
+
+  // First sign-in with a password someone else chose: pick your own (docs/20).
+  @Public()
+  @Throttle(RATE_LIMITS.staffSignIn)
+  @Post('staff/set-password')
+  @HttpCode(200)
+  setPassword(@TenantId() tenantId: string, @Body() dto: SetPasswordDto, @Ip() ip: string) {
+    return this.staff.setPassword(tenantId, dto.challengeId, dto.password, { ip });
+  }
+
+  // Invite links: check the link, then choose a password and go on to two-factor.
+  @Public()
+  @Throttle(RATE_LIMITS.staffSignIn)
+  @Post('staff/invite')
+  @HttpCode(200)
+  inspectInvite(@TenantId() tenantId: string, @Body() dto: InviteTokenDto) {
+    return this.staff.inspectInvite(tenantId, dto.token);
+  }
+
+  @Public()
+  @Throttle(RATE_LIMITS.staffSignIn)
+  @Post('staff/invite/accept')
+  @HttpCode(200)
+  acceptInvite(@TenantId() tenantId: string, @Body() dto: AcceptInviteDto, @Ip() ip: string) {
+    return this.staff.acceptInvite(tenantId, dto.token, dto.password, { ip });
+  }
+
+  @Throttle(RATE_LIMITS.staffSignIn)
+  @Post('staff/password')
+  @HttpCode(204)
+  async changePassword(
+    @CurrentUser() user: AuthUser,
+    @Body() dto: ChangePasswordDto,
+    @Ip() ip: string,
+  ) {
+    await this.staff.changePassword(user, dto.currentPassword, dto.newPassword, { ip });
   }
 
   @Post('logout')
