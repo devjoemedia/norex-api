@@ -1,3 +1,4 @@
+import { PayoutsService } from '../payouts/payouts.service';
 import {
   ConflictException,
   BadRequestException,
@@ -40,6 +41,7 @@ export class FulfilmentService {
     private readonly applications: ApplicationsService,
     private readonly kyc: KycService,
     private readonly imei: ImeiService,
+    private readonly payouts: PayoutsService,
   ) {}
 
   // The branch this agent staffs. Branch scope is resource-level, enforced here — an
@@ -211,7 +213,16 @@ export class FulfilmentService {
         deviceUnitId: updated.deviceUnitId,
       },
     });
-    // TODO: notify customer of hand-over (docs/10).
+    await this.payouts.accrue({
+      tenantId,
+      sourceType: 'application',
+      sourceId: applicationId,
+      sourceRef: app.reference,
+      baseMinor: await this.cashPrice(tenantId, app.deviceId, app.variantId),
+      currency: app.currency ?? 'GMD',
+      sellerId: actor.id,
+      branchId,
+    });
     return { fulfilment: updated, schedule };
   }
 
@@ -223,5 +234,22 @@ export class FulfilmentService {
       ...(crossBranch ? {} : { branchId: await this.agentBranch(tenantId, actor.id) }),
     };
     return this.prisma.fulfilment.findMany({ where, orderBy: { createdAt: 'desc' } });
+  }
+
+  // Commission base: the device's cash price (with the chosen storage).
+  private async cashPrice(tenantId: string, deviceId: string, variantId: string | null) {
+    const [d, v] = await Promise.all([
+      this.prisma.device.findFirst({
+        where: { tenantId, id: deviceId },
+        select: { cashPriceMinor: true },
+      }),
+      variantId
+        ? this.prisma.deviceVariant.findFirst({
+            where: { tenantId, id: variantId },
+            select: { priceDeltaMinor: true },
+          })
+        : null,
+    ]);
+    return (d?.cashPriceMinor ?? 0) + (v?.priceDeltaMinor ?? 0);
   }
 }

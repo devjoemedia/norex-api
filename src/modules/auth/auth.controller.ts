@@ -66,8 +66,13 @@ export class AuthController {
   @Throttle(RATE_LIMITS.staffSignIn)
   @Post('staff/login')
   @HttpCode(200)
-  async staffLogin(@TenantId() tenantId: string, @Body() dto: StaffLoginDto) {
-    return this.staff.login(tenantId, dto.email, dto.password);
+  async staffLogin(
+    @TenantId() tenantId: string,
+    @Body() dto: StaffLoginDto,
+    @Ip() ip: string,
+    @Headers('user-agent') userAgent: string,
+  ) {
+    return this.staff.login(tenantId, dto.email, dto.password, { ip, userAgent });
   }
 
   @Public()
@@ -93,11 +98,16 @@ export class AuthController {
   @Throttle(RATE_LIMITS.staffSignIn)
   @Post('staff/set-password')
   @HttpCode(200)
-  setPassword(@TenantId() tenantId: string, @Body() dto: SetPasswordDto, @Ip() ip: string) {
-    return this.staff.setPassword(tenantId, dto.challengeId, dto.password, { ip });
+  setPassword(
+    @TenantId() tenantId: string,
+    @Body() dto: SetPasswordDto,
+    @Ip() ip: string,
+    @Headers('user-agent') userAgent: string,
+  ) {
+    return this.staff.setPassword(tenantId, dto.challengeId, dto.password, { ip, userAgent });
   }
 
-  // Invite links: check the link, then choose a password and go on to two-factor.
+  // Invite links: check the link, then choose a password (then two-factor, if on).
   @Public()
   @Throttle(RATE_LIMITS.staffSignIn)
   @Post('staff/invite')
@@ -110,8 +120,13 @@ export class AuthController {
   @Throttle(RATE_LIMITS.staffSignIn)
   @Post('staff/invite/accept')
   @HttpCode(200)
-  acceptInvite(@TenantId() tenantId: string, @Body() dto: AcceptInviteDto, @Ip() ip: string) {
-    return this.staff.acceptInvite(tenantId, dto.token, dto.password, { ip });
+  acceptInvite(
+    @TenantId() tenantId: string,
+    @Body() dto: AcceptInviteDto,
+    @Ip() ip: string,
+    @Headers('user-agent') userAgent: string,
+  ) {
+    return this.staff.acceptInvite(tenantId, dto.token, dto.password, { ip, userAgent });
   }
 
   @Throttle(RATE_LIMITS.staffSignIn)

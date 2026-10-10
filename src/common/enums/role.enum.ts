@@ -8,4 +8,6 @@ export enum Role {
   SuperAdmin = 'super_admin',
   // Delegated HQ admin: reach of a Super Admin, limited to the areas they're granted.
   Admin = 'admin',
+  // Customer support: read-only on customers, applications and orders; runs tickets.
+  Support = 'support',
 }

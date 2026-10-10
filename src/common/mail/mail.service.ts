@@ -27,6 +27,7 @@ export class MailService {
       this.logger.log(`RESEND_API_KEY not set; not emailing "${message.subject}"`);
       return false;
     }
+    const replyTo = this.config.get<string>('EMAIL_REPLY_TO');
     try {
       const res = await fetch('https://api.resend.com/emails', {
         method: 'POST',
@@ -37,6 +38,7 @@ export class MailService {
           subject: message.subject,
           text: message.text,
           html: message.html,
+          ...(replyTo ? { reply_to: replyTo } : {}),
         }),
         signal: AbortSignal.timeout(10_000),
       });

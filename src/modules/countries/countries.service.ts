@@ -168,6 +168,9 @@ export class CountriesService {
         dialCode: dto.dialCode,
         idType: dto.idType,
         currency: dto.currency,
+        deliveryFeeMinor: dto.deliveryFeeMinor,
+        agentCommissionBps: dto.agentCommissionBps,
+        partnerOutletFeeBps: dto.partnerOutletFeeBps,
         launchedAt: dto.active && !tenant.launchedAt ? new Date() : undefined,
       },
       include: { domains: true },
@@ -676,6 +679,9 @@ export class CountriesService {
       launchedAt: t.launchedAt?.toISOString() ?? null,
       startingFxPpm: t.startingFxPpm,
       startingRoundStepMinor: t.startingRoundStepMinor,
+      deliveryFeeMinor: t.deliveryFeeMinor,
+      agentCommissionBps: t.agentCommissionBps,
+      partnerOutletFeeBps: t.partnerOutletFeeBps,
       domains: (t.domains ?? []).map((d) => ({ id: d.id, host: d.host, isPrimary: d.isPrimary })),
     };
   }

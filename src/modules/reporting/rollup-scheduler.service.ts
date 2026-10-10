@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { withTenant } from '../../common/context/request-context';
 import { PrismaService } from '../../database/prisma.service';
 import { ReportingService } from './reporting.service';
+import { recordJobRun } from '../../common/jobs/job-status';
 
 const DAY = 86_400_000;
 const BACKFILL_DAYS = 90;
@@ -58,7 +59,9 @@ export class RollupSchedulerService implements OnApplicationBootstrap, OnApplica
         });
       }
       this.log.log(`Refreshed ${done} country-days of report rollups in ${Date.now() - started}ms`);
+      recordJobRun('rollups', true, `${done} country-days`);
     } catch (e) {
+      recordJobRun('rollups', false, (e as Error).message.slice(0, 120));
       this.log.error(`Rollup refresh failed: ${(e as Error).message}`);
     } finally {
       this.running = false;

@@ -6,6 +6,8 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { StaffInviteService } from '../auth/staff-invite.service';
+import { RiskService } from '../risk/risk.service';
+import { CustomerNotifier } from '../notifications/customer-notifier.service';
 import { currencyOf } from '../../common/tenancy/currency';
 import { assertCanGrant, canGrant } from '../../common/tenancy/staff-roles';
 import {
@@ -36,6 +38,8 @@ export class AdminService {
     private readonly kycProfiles: KycService,
     private readonly config: ConfigService,
     private readonly invites: StaffInviteService,
+    private readonly notifier: CustomerNotifier,
+    private readonly risk: RiskService,
   ) {}
 
   private imageUrl(specs: unknown): string | null {
@@ -75,6 +79,12 @@ export class AdminService {
       rowsRaw.map((r) => r.customerId),
       rowsRaw.map((r) => r.deviceId),
     );
+    // The handed-over phone, by its visible IMEI tail (financed / leased units).
+    const units = await this.prisma.deviceUnit.findMany({
+      where: { tenantId, applicationId: { in: rowsRaw.map((r) => r.id) } },
+      select: { applicationId: true, imeiLast4: true },
+    });
+    const imeiByApp = new Map(units.map((u) => [u.applicationId, u.imeiLast4]));
 
     const count = (s: Array<ApplicationStatus>) =>
       byStatus.filter((r) => s.includes(r.status)).reduce((n, r) => n + r._count._all, 0);
@@ -115,6 +125,11 @@ export class AdminService {
         source: r.source ?? 'self',
         channel: r.channel ?? 'unknown',
         deviceType: r.deviceType,
+        termMonths: r.financeMonths ?? r.leaseMonths ?? null,
+        repaymentFrequency: r.type === 'financing' ? r.repaymentFrequency : null,
+        downPaymentPct: downPaymentPct(r.planSnapshot),
+        imeiLast4: imeiByApp.get(r.id) ?? null,
+        riskLevel: r.riskLevel,
         createdAt: r.createdAt.toISOString(),
       })),
     };
@@ -182,13 +197,17 @@ export class AdminService {
     const paid = schedules.filter((i) => i.status === 'paid').length;
     const repaymentPct = schedules.length ? Math.round((paid / schedules.length) * 100) : 0;
 
-    // Deterministic demo analytics (until a scoring service exists).
-    const seed = hashString(app.id);
-    const approvalProbability = 60 + (seed % 36); // 60–95
-    const creditScore = 600 + (seed % 200); // 600–799
-    const similarApplications = 1 + (seed % 8);
-    const risk = creditScore >= 720 ? 'Low' : creditScore >= 660 ? 'Medium' : 'High';
-    const tier = creditScore >= 750 ? 'Gold' : creditScore >= 680 ? 'Silver' : 'Bronze';
+    // Real signals only: the rule-based risk checks (docs/26) and the customer's own
+    // history. There's no credit bureau score yet, so none is shown.
+    const risk = await this.riskFor(tenantId, app);
+    const tier =
+      schedules.length === 0
+        ? 'New customer'
+        : repaymentPct >= 90
+          ? 'Good payer'
+          : repaymentPct >= 60
+            ? 'Mixed'
+            : 'Poor payer';
 
     return {
       id: app.id,
@@ -220,9 +239,14 @@ export class AdminService {
         ? { name: officer.fullName ?? 'Officer', at: fulfilment?.createdAt.toISOString() ?? null }
         : null,
       timeline: buildTimeline(app.status, app.submittedAt, app.decidedAt),
-      scores: { approvalProbability, risk, creditScore, similarApplications },
+      scores: {
+        risk: risk.level === 'high' ? 'High' : risk.level === 'medium' ? 'Medium' : 'Low',
+        similarApplications: Math.max(0, pastApplications - 1),
+      },
       files: files.map((f) => ({ ...f, createdAt: f.createdAt.toISOString() })),
       device: await this.chosenDevice(app, device),
+      // Rule-based checks for the reviewer (docs/26); older applications get them now.
+      risk,
       submission: await this.submission(tenantId, app, customer),
       deviceUnit: unit
         ? {
@@ -423,6 +447,34 @@ export class AdminService {
     if (!file) throw new NotFoundException('File not found');
     await this.audit(tenantId, 'application.file_viewed', 'application_file', file.id);
     return file;
+  }
+
+  private async riskFor(
+    tenantId: string,
+    app: { id: string; riskFlags: unknown; riskLevel: string | null },
+  ) {
+    const flags = app.riskLevel
+      ? (app.riskFlags as unknown[])
+      : await this.risk.assess(tenantId, app.id);
+    const level =
+      app.riskLevel ??
+      (
+        await this.prisma.application.findUnique({
+          where: { id: app.id },
+          select: { riskLevel: true },
+        })
+      )?.riskLevel;
+    return { level: level ?? 'low', flags: flags ?? [] };
+  }
+
+  async recheckRisk(tenantId: string, id: string) {
+    const app = await this.prisma.application.findFirst({
+      where: { tenantId, id },
+      select: { id: true },
+    });
+    if (!app) throw new NotFoundException('Application not found');
+    await this.risk.assess(tenantId, id);
+    return this.applicationDetail(tenantId, id);
   }
 
   // --- User detail --------------------------------------------------------
@@ -1183,6 +1235,8 @@ export class AdminService {
       },
     });
     await this.audit(tenantId, 'application.created_by_admin', 'application', app.id);
+    await this.risk.assess(tenantId, app.id);
+    await this.notifier.applicationReceived(tenantId, app.id);
     return { id: app.id };
   }
 
@@ -1209,6 +1263,9 @@ export class AdminService {
       'application',
       id,
     );
+    await this.notifier.applicationDecided(tenantId, id, status, {
+      occurrence: String(Date.now()),
+    });
     return this.applicationDetail(tenantId, id);
   }
 
@@ -1635,6 +1692,7 @@ export class AdminService {
 const ROLE_LABELS: Record<string, string> = {
   super_admin: 'Super Admin',
   admin: 'Admin',
+  support: 'Support',
   country_manager: 'Country Manager',
   approvals_officer: 'Compliance',
   product_editor: 'Operations',
@@ -1645,6 +1703,7 @@ const ROLE_LABELS: Record<string, string> = {
 const DEPARTMENT_FOR: Record<string, string> = {
   'Super Admin': 'Executive',
   Admin: 'Administration',
+  Support: 'Customer Support',
   'Country Manager': 'Country Management',
   Operations: 'Operations & Finance',
   Compliance: 'Risk & Compliance',
@@ -1659,6 +1718,7 @@ const PERMISSIONS_FOR: Record<string, Array<string>> = {
   Operations: ['Create', 'Read', 'Update'],
   Compliance: ['Read', 'Update'],
   Agent: ['Create', 'Read'],
+  Support: ['Read', 'Update'],
   Customer: ['Read'],
 };
 
@@ -1685,6 +1745,8 @@ function enumRole(business: string): Role {
       return Role.approvals_officer;
     case 'Agent':
       return Role.agent;
+    case 'Support':
+      return Role.support;
     // Support/Insurance have no enum equivalent yet (P5) — fall through to customer.
     default:
       return Role.customer;
@@ -1699,16 +1761,11 @@ function primaryRole(roles: Array<string>): string {
     'approvals_officer',
     'product_editor',
     'agent',
+    'support',
     'customer',
   ];
   const top = priority.find((p) => roles.includes(p)) ?? roles[0] ?? 'customer';
   return ROLE_LABELS[top] ?? top;
-}
-
-function hashString(s: string): number {
-  let h = 0;
-  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
-  return h;
 }
 
 // Application lifecycle stages, with each marked done/current/upcoming based on
@@ -1763,4 +1820,11 @@ function parBucket(days: number): '1-30' | '31-60' | '61-90' | '90+' {
   if (days <= 60) return '31-60';
   if (days <= 90) return '61-90';
   return '90+';
+}
+
+// Deposit as a share of everything the customer pays on an installment plan.
+function downPaymentPct(snapshot: unknown): number | null {
+  const s = snapshot as { type?: string; depositMinor?: number; totalPayableMinor?: number } | null;
+  if (s?.type !== 'financing' || !s.depositMinor || !s.totalPayableMinor) return null;
+  return Math.round((s.depositMinor / s.totalPayableMinor) * 100);
 }

@@ -44,6 +44,15 @@ const schema = z.object({
   // link instead. EMAIL_FROM must be on a domain verified in Resend.
   RESEND_API_KEY: z.string().min(10).optional(),
   EMAIL_FROM: z.string().min(3).default('Norex <no-reply@norexgambia.com>'),
+  // Where customer replies go (a team inbox). Unset = replies go to EMAIL_FROM.
+  EMAIL_REPLY_TO: z.string().email().optional(),
+
+  // Staff two-factor (authenticator app) after the password. Off for launch: staff
+  // sign in with email + password only. "true" turns it back on for everyone.
+  STAFF_2FA_ENABLED: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((v) => v === 'true'),
 });
 
 export type AppConfig = z.infer<typeof schema>;

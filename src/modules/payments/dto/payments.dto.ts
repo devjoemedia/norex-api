@@ -1,6 +1,7 @@
 import { Type } from 'class-transformer';
 import {
   IsEnum,
+  IsIn,
   IsInt,
   IsOptional,
   IsPositive,
@@ -9,7 +10,7 @@ import {
   Length,
   Min,
 } from 'class-validator';
-import { InstallmentStatus, PaymentChannel, PaymentPurpose } from '@prisma/client';
+import { InstallmentStatus, PaymentPurpose } from '@prisma/client';
 
 export class InitiatePaymentDto {
   @IsEnum(PaymentPurpose) purpose!: PaymentPurpose;
@@ -24,7 +25,8 @@ export class InitiatePaymentDto {
 
   @IsString() @Length(2, 32) provider!: string;
 
-  @IsEnum(PaymentChannel) channel!: PaymentChannel;
+  // Customers pay in the app or by USSD; `counter` is recorded by staff (POS) only.
+  @IsIn(['app', 'ussd']) channel!: 'app' | 'ussd';
 }
 
 export class ListInstallmentsDto {

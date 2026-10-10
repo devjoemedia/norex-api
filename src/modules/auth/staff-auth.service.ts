@@ -7,6 +7,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import * as argon2 from 'argon2';
 import { authenticator } from 'otplib';
+import { Prisma } from '@prisma/client';
 import { AdminPermissions, normalizePermissions } from '../../common/auth/admin-permissions';
 import { PrismaService } from '../../database/prisma.service';
 import { AuditService } from '../../common/audit/audit.service';
@@ -28,6 +29,7 @@ interface Ctx {
 }
 
 type LoginChallenge =
+  | ({ status: 'signed_in' } & StaffAuthResult)
   | { status: 'set_password'; challengeId: string }
   | { status: 'enroll_2fa'; challengeId: string; secret: string; otpauthUrl: string }
   | { status: '2fa_required'; challengeId: string };
@@ -68,7 +70,17 @@ export class StaffAuthService {
     return (this.dummyHash ??= await argon2.hash(randomTokenHex()));
   }
 
-  async login(tenantId: string, email: string, password: string): Promise<LoginChallenge> {
+  /** STAFF_2FA_ENABLED: when off, the password alone signs staff in. */
+  twoFactorEnabled(): boolean {
+    return this.config.get<boolean>('STAFF_2FA_ENABLED') === true;
+  }
+
+  async login(
+    tenantId: string,
+    email: string,
+    password: string,
+    ctx: Ctx = {},
+  ): Promise<LoginChallenge> {
     const user = await this.prisma.user.findFirst({ where: { tenantId, email } });
     const hash = user?.passwordHash ?? (await this.dummy());
     const ok = await argon2.verify(hash, password).catch(() => false);
@@ -85,7 +97,7 @@ export class StaffAuthService {
       });
       return { status: 'set_password', challengeId: challenge.id };
     }
-    return this.secondFactor(tenantId, user);
+    return this.secondFactor(tenantId, user, ctx);
   }
 
   private expiry(): Date {
@@ -93,7 +105,11 @@ export class StaffAuthService {
   }
 
   // After the password: set up two-factor the first time, otherwise ask for a code.
-  private async secondFactor(tenantId: string, user: StaffUser): Promise<LoginChallenge> {
+  // With two-factor switched off, the password was enough: sign in now.
+  private async secondFactor(tenantId: string, user: StaffUser, ctx: Ctx): Promise<LoginChallenge> {
+    if (!this.twoFactorEnabled()) {
+      return { status: 'signed_in', ...(await this.signIn(tenantId, user.id, ctx)) };
+    }
     const expiresAt = this.expiry();
     const email = user.email ?? '';
 
@@ -212,6 +228,39 @@ export class StaffAuthService {
       });
     }
 
+    return { ...(await this.session(tenantId, user, ctx)), recoveryCodes };
+  }
+
+  // Password-only sign-in (two-factor off): audited like a two-factor sign-in.
+  private async signIn(tenantId: string, userId: string, ctx: Ctx): Promise<StaffAuthResult> {
+    const user = await this.prisma.user.findFirst({
+      where: { id: userId, tenantId },
+      include: { roles: true },
+    });
+    if (!user) throw new UnauthorizedException('Account not found');
+    if (user.status === 'suspended') throw new ForbiddenException('Account suspended');
+    await this.audit.write(tenantId, {
+      actorId: user.id,
+      actorRole: user.roles.map((r) => r.role).join(','),
+      action: 'staff.login',
+      entity: 'user',
+      entityId: user.id,
+      ip: ctx.ip,
+    });
+    return this.session(tenantId, user, ctx);
+  }
+
+  private async session(
+    tenantId: string,
+    user: {
+      id: string;
+      email: string | null;
+      fullName: string | null;
+      permissions: Prisma.JsonValue;
+      roles: { role: string }[];
+    },
+    ctx: Ctx,
+  ): Promise<StaffAuthResult> {
     const roles = user.roles.map((r) => r.role);
     const pair = await this.tokens.issue({
       userId: user.id,
@@ -226,7 +275,6 @@ export class StaffAuthService {
     return {
       ...pair,
       user: { id: user.id, email: user.email, fullName: user.fullName, roles, permissions },
-      recoveryCodes,
     };
   }
 
@@ -267,7 +315,7 @@ export class StaffAuthService {
       entityId: user.id,
       ip: ctx.ip,
     });
-    return this.secondFactor(tenantId, user);
+    return this.secondFactor(tenantId, user, ctx);
   }
 
   /** What the accept-invite page shows before the person chooses a password. */
@@ -282,7 +330,7 @@ export class StaffAuthService {
     };
   }
 
-  // Invite link -> own password -> two-factor setup (the next step returned here).
+  // Invite link -> own password -> two-factor setup, or signed in when it's off.
   async acceptInvite(
     tenantId: string,
     token: string,
@@ -301,7 +349,7 @@ export class StaffAuthService {
       entityId: user.id,
       ip: ctx.ip,
     });
-    return this.secondFactor(tenantId, { ...user, totpEnabledAt: null });
+    return this.secondFactor(tenantId, { ...user, totpEnabledAt: null }, ctx);
   }
 
   // Signed-in change. Other sessions are signed out; this one stays.

@@ -3,6 +3,7 @@ import {
   ArrayMaxSize,
   ArrayMinSize,
   IsArray,
+  IsBoolean,
   IsEmail,
   IsEnum,
   IsIn,
@@ -93,4 +94,25 @@ export class OrderHandoverDto {
   @ValidateNested({ each: true })
   @Type(() => HandoverUnitDto)
   units!: HandoverUnitDto[];
+}
+
+// ---- delivery and refunds (docs/23) ----
+export class CourierDto {
+  @IsString() @Length(2, 80) name!: string;
+  @IsOptional()
+  @Matches(/^\+?[0-9 ()-]{7,20}$/, { message: 'Enter a valid phone number' })
+  phone?: string;
+}
+
+export class RefundRequestDto {
+  @IsOptional() @IsInt() @Min(1) amountMinor?: number;
+  @IsString() @Length(3, 300) reason!: string;
+  @IsBoolean() returnUnits!: boolean;
+}
+
+export class RefundDecisionDto {
+  @IsIn(['approve', 'reject']) decision!: 'approve' | 'reject';
+  @IsOptional() @IsString() @Length(0, 300) note?: string;
+  @IsOptional() @IsIn(['cash', 'momo', 'bank']) method?: 'cash' | 'momo' | 'bank';
+  @IsOptional() @IsString() @Length(1, 80) paymentRef?: string;
 }

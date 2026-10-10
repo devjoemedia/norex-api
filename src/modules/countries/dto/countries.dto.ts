@@ -21,6 +21,10 @@ export class UpdateCountryDto {
   @IsOptional() @IsString() @MaxLength(60) idType?: string;
   /** Only while the country has no priced rows (currency is then immutable). */
   @IsOptional() @Matches(/^[A-Z]{3}$/) currency?: string;
+  // Finance ops (docs/23). Rates are basis points: 150 = 1.5%.
+  @IsOptional() @IsInt() @Min(0) @Max(100_000_000) deliveryFeeMinor?: number;
+  @IsOptional() @IsInt() @Min(0) @Max(2000) agentCommissionBps?: number;
+  @IsOptional() @IsInt() @Min(0) @Max(2000) partnerOutletFeeBps?: number;
 }
 
 export class AddDomainDto {

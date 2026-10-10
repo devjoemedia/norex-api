@@ -7,7 +7,15 @@ import { TenantScope, TenantScopeValue } from '../../common/decorators/tenant-sc
 import { Role } from '../../common/enums/role.enum';
 import { AllCountriesService } from '../../common/tenancy/all-countries.service';
 import { OrdersService } from './orders.service';
-import { ListOrdersDto, OrderActionDto, OrderHandoverDto, OrderPaymentDto } from './dto/order.dto';
+import {
+  CourierDto,
+  ListOrdersDto,
+  OrderActionDto,
+  OrderHandoverDto,
+  OrderPaymentDto,
+  RefundDecisionDto,
+  RefundRequestDto,
+} from './dto/order.dto';
 
 const STAFF = [
   Role.SuperAdmin,
@@ -16,6 +24,8 @@ const STAFF = [
   Role.ProductEditor, // Operations
   Role.Agent,
 ];
+// Support reads orders (list and detail) but can't act on them.
+const VIEWERS = [...STAFF, Role.Support];
 const COUNTER = [Role.SuperAdmin, Role.CountryManager, Role.ProductEditor, Role.Agent]; // take cash, hand over
 
 // Cash orders from the website cart (docs/18).
@@ -26,14 +36,14 @@ export class AdminOrdersController {
     private readonly all: AllCountriesService,
   ) {}
 
-  @Roles(...STAFF)
+  @Roles(...VIEWERS)
   @AllowAllTenants()
   @Get()
   list(@TenantScope() scope: TenantScopeValue, @Query() q: ListOrdersDto) {
     return this.all.listing(scope, (t) => this.orders.list(t, q));
   }
 
-  @Roles(...STAFF)
+  @Roles(...VIEWERS)
   @Get(':id')
   detail(@TenantId() tenantId: string, @Param('id', ParseUUIDPipe) id: string) {
     return this.orders.detail(tenantId, id);
@@ -73,5 +83,49 @@ export class AdminOrdersController {
     @Body() dto: OrderHandoverDto,
   ) {
     return this.orders.handover(tenantId, user, id, dto);
+  }
+
+  // ---------- delivery and refunds (docs/23) ----------
+
+  @Roles(...COUNTER)
+  @Post(':id/courier')
+  @HttpCode(200)
+  courier(
+    @TenantId() tenantId: string,
+    @CurrentUser() user: AuthUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: CourierDto,
+  ) {
+    return this.orders.assignCourier(tenantId, user, id, dto);
+  }
+
+  @Roles(...COUNTER)
+  @Post(':id/refunds')
+  @HttpCode(200)
+  requestRefund(
+    @TenantId() tenantId: string,
+    @CurrentUser() user: AuthUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: RefundRequestDto,
+  ) {
+    return this.orders.requestRefund(tenantId, user, id, dto);
+  }
+
+  @Roles(Role.SuperAdmin, Role.CountryManager)
+  @Get('refunds/pending')
+  pendingRefunds(@TenantId() tenantId: string) {
+    return this.orders.pendingRefunds(tenantId);
+  }
+
+  @Roles(Role.SuperAdmin, Role.CountryManager)
+  @Post('refunds/:refundId/decision')
+  @HttpCode(200)
+  decideRefund(
+    @TenantId() tenantId: string,
+    @CurrentUser() user: AuthUser,
+    @Param('refundId', ParseUUIDPipe) refundId: string,
+    @Body() dto: RefundDecisionDto,
+  ) {
+    return this.orders.decideRefund(tenantId, user, refundId, dto);
   }
 }

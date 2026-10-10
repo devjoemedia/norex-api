@@ -51,6 +51,9 @@ services:
         sync: false
       - key: EMAIL_FROM
         value: Norex <no-reply@norexgambia.com>
+      # Staff sign-in is email + password only for now; "true" adds authenticator codes.
+      - key: STAFF_2FA_ENABLED
+        value: "false"
       - key: TRUST_PROXY_HOPS
         value: "1"
       - key: THROTTLE_LIMIT

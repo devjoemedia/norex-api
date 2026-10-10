@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { RiskModule } from '../risk/risk.module';
 import { CatalogModule } from '../catalog/catalog.module';
 import { KycModule } from '../kyc/kyc.module';
 import { FinancingModule } from '../financing/financing.module';
@@ -16,6 +17,7 @@ import { ApplicationsService } from './applications.service';
     LeaseModule,
     PaymentsModule,
     NotificationsModule,
+    RiskModule,
   ],
   controllers: [ApplicationsController],
   providers: [ApplicationsService],

@@ -8,6 +8,7 @@ export const COUNTRY_MANAGER_GRANTABLE = [
   'agent',
   'approvals_officer',
   'product_editor',
+  'support',
 ];
 
 export function canGrant(actorRoles: readonly string[], role: string): boolean {

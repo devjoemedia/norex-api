@@ -29,6 +29,12 @@ import { CountriesModule } from './modules/countries/countries.module';
 import { WebIntakeModule } from './modules/web-intake/web-intake.module';
 import { DeviceUnitsModule } from './modules/device-units/device-units.module';
 import { OrdersModule } from './modules/orders/orders.module';
+import { CustomersModule } from './modules/customers/customers.module';
+import { PosModule } from './modules/pos/pos.module';
+import { PayoutsModule } from './modules/payouts/payouts.module';
+import { CollectionsModule } from './modules/collections/collections.module';
+import { SupportModule } from './modules/support/support.module';
+import { SystemModule } from './modules/system/system.module';
 import { PaymentsModule } from './modules/payments/payments.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
@@ -102,6 +108,12 @@ import { AllTenantsGuard } from './common/guards/all-tenants.guard';
     WebIntakeModule,
     DeviceUnitsModule,
     OrdersModule,
+    CustomersModule,
+    PosModule,
+    PayoutsModule,
+    CollectionsModule,
+    SupportModule,
+    SystemModule,
   ],
   providers: [
     // Guard chain order: throttle -> authenticate -> tenant match -> role.

@@ -1,3 +1,4 @@
+import { FREQUENCIES, RepaymentFrequency, atFrequency } from '../payments/repayment-frequency';
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { FinanceEligibilityRule, FinanceFeeMode, FinancePlanTerm, Prisma } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
@@ -24,6 +25,11 @@ export interface FinanceSnapshot {
   currency: string;
   planTermId: string;
   computedAt: string;
+  /** How often it's repaid; periods/periodMinor describe that (monthly = months). */
+  frequency: RepaymentFrequency;
+  periods: number;
+  periodMinor: number;
+  finalPeriodMinor: number;
 }
 
 @Injectable()
@@ -76,6 +82,11 @@ export class FinancingService {
             months: term.months,
             monthlyMarkupBps: term.monthlyMarkupBps,
           });
+    const monthly = {
+      months: term.months,
+      monthlyMinor: c.monthlyMinor,
+      finalMonthlyMinor: c.finalMonthlyMinor,
+    };
     return {
       months: term.months,
       planTermId: term.id,
@@ -84,6 +95,19 @@ export class FinancingService {
       finalMonthlyMinor: c.finalMonthlyMinor,
       totalRepayableMinor: c.totalRepayableMinor,
       totalPayableMinor: c.totalPayableMinor,
+      // The same plan repaid weekly or every two weeks (same total).
+      frequencies: Object.fromEntries(
+        FREQUENCIES.map((f) => {
+          const p = atFrequency(monthly, f);
+          return [
+            f,
+            { count: p.periods, amountMinor: p.periodMinor, finalAmountMinor: p.finalPeriodMinor },
+          ];
+        }),
+      ) as Record<
+        RepaymentFrequency,
+        { count: number; amountMinor: number; finalAmountMinor: number }
+      >,
     };
   }
 
@@ -153,10 +177,12 @@ export class FinancingService {
     months: number,
     upfrontMinor?: number,
     variantId?: string | null,
+    frequency: RepaymentFrequency = 'monthly',
   ): Promise<FinanceSnapshot> {
     const { device, term } = await this.resolve(tenantId, deviceId, months, variantId);
     this.checkUpfront(device, term, upfrontMinor);
     const o = this.option(device, term, upfrontMinor);
+    const at = atFrequency(o, frequency);
     return {
       type: 'financing',
       months: o.months,
@@ -168,6 +194,10 @@ export class FinancingService {
       currency: device.currency,
       planTermId: term.id,
       computedAt: new Date().toISOString(),
+      frequency,
+      periods: at.periods,
+      periodMinor: at.periodMinor,
+      finalPeriodMinor: at.finalPeriodMinor,
     };
   }
 

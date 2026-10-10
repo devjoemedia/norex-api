@@ -154,6 +154,84 @@ export class DeviceUnitsService {
     }
   }
 
+  /**
+   * Stock intake in bulk: many IMEIs of one model at once (scanned or pasted). Each
+   * line succeeds or fails on its own, so one bad IMEI doesn't block the delivery.
+   */
+  async registerMany(
+    tenantId: string,
+    actor: Actor,
+    input: { deviceId: string; variantId?: string; branchId?: string; imeis: string[] },
+  ) {
+    const device = await this.prisma.device.findFirst({
+      where: { id: input.deviceId, tenantId },
+      include: { variants: true },
+    });
+    if (!device) throw new NotFoundException('Product not found');
+    if (input.variantId && !device.variants.some((v) => v.id === input.variantId)) {
+      throw new NotFoundException('Storage option not found for this product');
+    }
+    if (
+      input.branchId &&
+      !(await this.prisma.branch.findFirst({ where: { tenantId, id: input.branchId } }))
+    ) {
+      throw new NotFoundException('Outlet not found');
+    }
+    const results: Array<{
+      line: string;
+      result: 'added' | 'invalid' | 'duplicate';
+      imeiLast4?: string;
+    }> = [];
+    const seen = new Set<string>();
+    for (const raw of input.imeis) {
+      const line = raw.trim();
+      if (!line) continue;
+      const digits = normalizeImei(line);
+      if (!isValidImei(digits)) {
+        results.push({ line, result: 'invalid' });
+        continue;
+      }
+      if (seen.has(digits)) {
+        results.push({ line, result: 'duplicate', imeiLast4: digits.slice(-4) });
+        continue;
+      }
+      seen.add(digits);
+      try {
+        const sealed = this.imei.seal(tenantId, digits);
+        await this.prisma.deviceUnit.create({
+          data: {
+            tenantId,
+            ...sealed,
+            deviceId: input.deviceId,
+            variantId: input.variantId ?? null,
+            branchId: input.branchId ?? null,
+            status: DeviceUnitStatus.in_stock,
+          },
+        });
+        results.push({ line, result: 'added', imeiLast4: sealed.imeiLast4 });
+      } catch (e) {
+        if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
+          results.push({ line, result: 'duplicate', imeiLast4: digits.slice(-4) });
+        } else throw e;
+      }
+    }
+    const added = results.filter((r) => r.result === 'added').length;
+    await this.audit.write(tenantId, {
+      actorId: actor.id,
+      actorRole: actor.roles.join(','),
+      action: 'device_unit.bulk_registered',
+      entity: 'device',
+      entityId: input.deviceId,
+      after: { added, lines: results.length, branchId: input.branchId ?? null },
+    });
+    return {
+      added,
+      invalid: results.filter((r) => r.result === 'invalid').length,
+      duplicate: results.filter((r) => r.result === 'duplicate').length,
+      results,
+    };
+  }
+
   // Full IMEI for a named reason (e.g. police report, provider enrolment). Audited.
   async reveal(tenantId: string, actor: Actor, id: string, reason: string) {
     const unit = await this.prisma.deviceUnit.findFirst({ where: { id, tenantId } });

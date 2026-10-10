@@ -1,3 +1,5 @@
+import { RiskService } from '../risk/risk.service';
+import { CustomerNotifier } from '../notifications/customer-notifier.service';
 import {
   BadRequestException,
   ConflictException,
@@ -15,7 +17,6 @@ import { KycService } from '../kyc/kyc.service';
 import { FinancingService } from '../financing/financing.service';
 import { LeaseService } from '../lease/lease.service';
 import { PaymentsService } from '../payments/payments.service';
-import { NotificationsService } from '../notifications/notifications.service';
 import {
   canTransition,
   DecisionAction,
@@ -46,7 +47,8 @@ export class ApplicationsService {
     private readonly financing: FinancingService,
     private readonly lease: LeaseService,
     private readonly payments: PaymentsService,
-    private readonly notifications: NotificationsService,
+    private readonly notifier: CustomerNotifier,
+    private readonly risk: RiskService,
   ) {}
 
   private reference(type: ApplicationType): string {
@@ -228,7 +230,8 @@ export class ApplicationsService {
     });
 
     if (idemKey) await this.idem.complete(tenantId, idemKey, app.id);
-    // TODO: notify the customer (docs/10).
+    await this.risk.assess(tenantId, app.id);
+    await this.notifier.applicationReceived(tenantId, app.id);
     return app;
   }
 
@@ -348,17 +351,10 @@ export class ApplicationsService {
 
     if (idemKey) await this.idem.complete(tenantId, idemKey, id);
 
-    // Notify the customer of the decision (docs/10). Best-effort — emit never throws.
-    await this.notifications.emit({
-      tenantId,
-      eventKey: 'application_status',
-      userId: result.updated.customerId,
-      entityId: `${id}:${target}`,
-      vars: {
-        reference: result.updated.reference ?? '',
-        status: target,
-        reason: dto.reason ?? '',
-      },
+    // Email the customer about the decision (docs/10). Best-effort, never throws.
+    await this.notifier.applicationDecided(tenantId, id, target, {
+      reason: dto.decision === DecisionAction.request_info ? dto.reason : null,
+      occurrence: String(result.updated.decidedAt?.getTime() ?? Date.now()),
     });
     // TODO: schedule + fulfilment on approve (docs/09, docs/12).
     return result.updated;

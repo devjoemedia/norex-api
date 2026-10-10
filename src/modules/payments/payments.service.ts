@@ -7,7 +7,7 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { currencyOf } from '../../common/tenancy/currency';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { ConfigService } from '@nestjs/config';
 import {
   Application,
@@ -16,6 +16,7 @@ import {
   InstallmentStatus,
   LedgerAccount,
   LedgerDirection,
+  PaymentChannel,
   PaymentPurpose,
   PaymentStatus,
   Prisma,
@@ -116,6 +117,7 @@ export class PaymentsService {
         monthlyMinor: monthly,
         finalMonthlyMinor: snap.finalMonthlyMinor ?? monthly,
         activatedAt: new Date(),
+        frequency: app.repaymentFrequency,
       });
 
       const schedule = await tx.repaymentSchedule.create({
@@ -124,6 +126,7 @@ export class PaymentsService {
           applicationId,
           customerId: app.customerId,
           kind,
+          frequency: kind === ScheduleKind.financing ? app.repaymentFrequency : 'monthly',
           currency: built.currency,
           totalAmountMinor: built.totalAmountMinor,
           installments: {
@@ -498,6 +501,145 @@ export class PaymentsService {
       });
     }
     return { status: 'succeeded' };
+  }
+
+  // ---------------- counter payments (POS, docs/21) ----------------
+  /**
+   * Cash or mobile money taken by staff at an outlet, confirmed on the spot: no
+   * provider round trip. A deposit settles an application's deposit; a repayment is
+   * applied to the oldest unpaid installments first and may not exceed what's owed.
+   * Runs inside the caller's transaction when one is given.
+   */
+  async recordCounterPayment(
+    input: {
+      tenantId: string;
+      actorId: string;
+      customerId: string;
+      purpose: 'deposit' | 'installment';
+      applicationId?: string;
+      scheduleId?: string;
+      amountMinor: number;
+      currency: string;
+      method: 'cash' | 'momo';
+      reference?: string;
+      branchId?: string | null;
+    },
+    client?: Prisma.TransactionClient,
+  ): Promise<{ paymentId: string; receiptNumber: string; appliedTo: number[] }> {
+    if (input.amountMinor <= 0) throw new BadRequestException('Enter the amount received');
+    const run = async (tx: Prisma.TransactionClient) => {
+      const appliedTo: number[] = [];
+      let open: Array<{ id: string; seq: number; amountMinor: number; paidAmountMinor: number }> =
+        [];
+      if (input.purpose === 'installment') {
+        if (!input.scheduleId) throw new BadRequestException('Which plan is this payment for?');
+        open = await tx.installment.findMany({
+          where: {
+            tenantId: input.tenantId,
+            scheduleId: input.scheduleId,
+            status: { not: InstallmentStatus.paid },
+          },
+          orderBy: { seq: 'asc' },
+        });
+        const owed = open.reduce((n, i) => n + i.amountMinor - i.paidAmountMinor, 0);
+        if (owed === 0) throw new ConflictException('Nothing is owed on this plan');
+        if (input.amountMinor > owed) {
+          throw new BadRequestException(
+            `That's more than what's owed (${input.currency} ${formatAmount(owed, input.currency)})`,
+          );
+        }
+      }
+
+      const payment = await tx.payment.create({
+        data: {
+          tenantId: input.tenantId,
+          customerId: input.customerId,
+          applicationId: input.applicationId ?? null,
+          scheduleId: input.scheduleId ?? null,
+          installmentId: open[0]?.id ?? null,
+          purpose:
+            input.purpose === 'deposit' ? PaymentPurpose.deposit : PaymentPurpose.installment,
+          provider: input.method === 'cash' ? 'counter_cash' : 'counter_momo',
+          providerRef: input.reference?.trim() || null,
+          channel: PaymentChannel.counter,
+          amountMinor: input.amountMinor,
+          currency: input.currency,
+          status: PaymentStatus.succeeded,
+          idempotencyKey: randomUUID(),
+          receivedById: input.actorId,
+          branchId: input.branchId ?? null,
+        },
+      });
+
+      await this.ledger.post(
+        tx,
+        input.tenantId,
+        input.currency,
+        [
+          {
+            account: input.method === 'cash' ? LedgerAccount.cash_on_hand : LedgerAccount.cash_momo,
+            direction: LedgerDirection.debit,
+            amountMinor: input.amountMinor,
+          },
+          {
+            account:
+              input.purpose === 'deposit'
+                ? LedgerAccount.deposit_liability
+                : LedgerAccount.customer_receivable,
+            direction: LedgerDirection.credit,
+            amountMinor: input.amountMinor,
+          },
+        ],
+        { paymentId: payment.id, memo: `counter ${input.purpose}` },
+      );
+
+      // Oldest first; a partial amount leaves the next installment part-paid.
+      let left = input.amountMinor;
+      for (const inst of open) {
+        if (left <= 0) break;
+        const take = Math.min(left, inst.amountMinor - inst.paidAmountMinor);
+        const paidAmountMinor = inst.paidAmountMinor + take;
+        const fullyPaid = paidAmountMinor >= inst.amountMinor;
+        await tx.installment.update({
+          where: { id: inst.id },
+          data: {
+            paidAmountMinor,
+            ...(fullyPaid ? { status: InstallmentStatus.paid, paidAt: new Date() } : {}),
+          },
+        });
+        appliedTo.push(inst.seq);
+        left -= take;
+      }
+      if (input.scheduleId) await this.maybeCompleteSchedule(tx, input.tenantId, input.scheduleId);
+
+      const receiptNumber = await this.nextReceiptNumber(tx, input.tenantId);
+      await tx.receipt.create({
+        data: {
+          tenantId: input.tenantId,
+          paymentId: payment.id,
+          number: receiptNumber,
+          storageKey: `tenants/${input.tenantId}/receipts/${payment.id}.pdf`,
+        },
+      });
+      await tx.auditLog.create({
+        data: {
+          tenantId: input.tenantId,
+          actorId: input.actorId,
+          actorRole: 'staff',
+          action: 'payments.counter_payment',
+          entity: 'payment',
+          entityId: payment.id,
+          after: {
+            purpose: input.purpose,
+            method: input.method,
+            amountMinor: input.amountMinor,
+            receipt: receiptNumber,
+          },
+        },
+      });
+      return { paymentId: payment.id, receiptNumber, appliedTo };
+    };
+    return client ? run(client) : this.prisma.$transaction(run);
   }
 
   private async maybeCompleteSchedule(

@@ -3,6 +3,8 @@
 // integer minor units; no floats. The schedule is built once at activation and never
 // recomputed from the live catalog (docs/09).
 
+import { RepaymentFrequency, atFrequency, dueDateFor } from './repayment-frequency';
+
 export interface ScheduleInput {
   kind: 'financing' | 'lease';
   currency: string;
@@ -11,6 +13,8 @@ export interface ScheduleInput {
   monthlyMinor: number; // regular monthly instalment
   finalMonthlyMinor: number; // last instalment (absorbs rounding remainder)
   activatedAt: Date;
+  /** Installment plans only; leases are always monthly. Default monthly. */
+  frequency?: RepaymentFrequency;
 }
 
 export interface BuiltInstallment {
@@ -53,12 +57,22 @@ export function buildSchedule(input: ScheduleInput): BuiltSchedule {
     });
   }
 
-  for (let i = 1; i <= input.months; i++) {
+  // Same total as the monthly plan, paid in more, smaller payments when not monthly.
+  const frequency = input.kind === 'financing' ? (input.frequency ?? 'monthly') : 'monthly';
+  const plan = atFrequency(
+    {
+      months: input.months,
+      monthlyMinor: input.monthlyMinor,
+      finalMonthlyMinor: input.finalMonthlyMinor,
+    },
+    frequency,
+  );
+  for (let i = 1; i <= plan.periods; i++) {
     installments.push({
       seq: i,
       isDeposit: false,
-      dueDate: addMonths(input.activatedAt, i),
-      amountMinor: i === input.months ? input.finalMonthlyMinor : input.monthlyMinor,
+      dueDate: dueDateFor(input.activatedAt, frequency, i, addMonths),
+      amountMinor: i === plan.periods ? plan.finalPeriodMinor : plan.periodMinor,
     });
   }
 

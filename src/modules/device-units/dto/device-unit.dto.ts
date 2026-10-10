@@ -1,5 +1,17 @@
 import { Type } from 'class-transformer';
-import { IsEnum, IsInt, IsOptional, IsString, IsUUID, Length, Max, Min } from 'class-validator';
+import {
+  ArrayMaxSize,
+  ArrayMinSize,
+  IsArray,
+  IsEnum,
+  IsInt,
+  IsOptional,
+  IsString,
+  IsUUID,
+  Length,
+  Max,
+  Min,
+} from 'class-validator';
 import { DeviceUnitStatus } from '@prisma/client';
 
 export class ListDeviceUnitsDto {
@@ -21,4 +33,17 @@ export class RegisterDeviceUnitDto {
 
 export class RevealImeiDto {
   @IsString() @Length(5, 200) reason!: string;
+}
+
+// Stock intake in bulk: one model, many IMEIs (docs/22).
+export class BulkRegisterDto {
+  @IsUUID() deviceId!: string;
+  @IsOptional() @IsUUID() variantId?: string;
+  @IsOptional() @IsUUID() branchId?: string;
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayMaxSize(300)
+  @IsString({ each: true })
+  @Length(1, 40, { each: true })
+  imeis!: string[];
 }

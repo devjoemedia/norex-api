@@ -1,3 +1,4 @@
+import type { RepaymentFrequency } from '../../payments/repayment-frequency';
 import { Type } from 'class-transformer';
 import {
   ArrayMaxSize,
@@ -71,6 +72,8 @@ export class WebApplicationDto {
 
   @IsOptional() @IsInt() @Min(1) @Max(60) financeMonths?: number;
   @IsOptional() @IsInt() @Min(0) upfrontMinor?: number;
+  // Installment plans: monthly (default), biweekly or weekly; same total (docs/09).
+  @IsOptional() @IsIn(['monthly', 'biweekly', 'weekly']) repaymentFrequency?: RepaymentFrequency;
   @IsOptional() @IsInt() leaseMonths?: number;
 
   @IsOptional() @ValidateNested() @Type(() => WebIdentityDto) identity?: WebIdentityDto;

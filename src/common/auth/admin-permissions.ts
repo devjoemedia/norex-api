@@ -6,6 +6,7 @@
 
 export const ADMIN_AREAS = [
   'applications',
+  'support',
   'orders',
   'catalog',
   'devices',
@@ -27,6 +28,7 @@ const AREA_ROUTES: Array<[string, AdminArea]> = [
   ['/admin/applications', 'applications'],
   ['/admin/customers', 'applications'],
   ['/admin/kyc', 'applications'],
+  ['/admin/agreements', 'applications'],
   ['/admin/trade-in', 'applications'],
   ['/applications', 'applications'],
   ['/kyc/profiles', 'applications'],
@@ -34,6 +36,7 @@ const AREA_ROUTES: Array<[string, AdminArea]> = [
   ['/leases', 'applications'],
 
   ['/admin/orders', 'orders'],
+  ['/admin/pos', 'orders'],
   ['/admin/pickups', 'orders'],
   ['/fulfilment', 'orders'],
 
@@ -43,6 +46,7 @@ const AREA_ROUTES: Array<[string, AdminArea]> = [
   ['/finance/plans', 'catalog'],
 
   ['/admin/device-units', 'devices'],
+  ['/admin/transfers', 'devices'],
 
   ['/admin/branches', 'outlets'],
   ['/admin/branch-management', 'outlets'],
@@ -50,8 +54,10 @@ const AREA_ROUTES: Array<[string, AdminArea]> = [
   ['/admin/agents', 'outlets'],
 
   ['/admin/payments', 'payments'],
+  ['/admin/payouts', 'payments'],
   ['/admin/payment-providers', 'payments'],
   ['/admin/collections', 'payments'],
+  ['/admin/recovery', 'payments'],
   ['/admin/reconciliation', 'payments'],
   ['/admin/arrears', 'payments'],
   ['/payments', 'payments'],
@@ -69,10 +75,13 @@ const AREA_ROUTES: Array<[string, AdminArea]> = [
   ['/admin/notifications', 'content'],
 
   ['/admin/activity-log', 'audit'],
+
+  ['/admin/tickets', 'support'],
 ];
 
-// Open to every admin: the dashboard is their landing page and shows only totals.
-const ALWAYS_OPEN = ['/admin/dashboard'];
+// Open to every admin: the dashboard is their landing page and shows only totals, and
+// search filters its own results by area (customers/search-access.ts).
+const ALWAYS_OPEN = ['/admin/dashboard', '/admin/search'];
 
 function stripApi(path: string): string {
   const p = path.split('?')[0].replace(/\/+$/, '');

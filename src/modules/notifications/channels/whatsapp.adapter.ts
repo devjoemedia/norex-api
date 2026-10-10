@@ -1,5 +1,4 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { randomUUID } from 'node:crypto';
 import { ConfigService } from '@nestjs/config';
 import { NotificationChannel } from '@prisma/client';
 import { ChannelAdapter, RenderedMessage, SendResult } from './channel.interface';
@@ -13,10 +12,12 @@ export class WhatsAppAdapter implements ChannelAdapter {
 
   constructor(private readonly config: ConfigService) {}
 
+  // eslint-disable-next-line @typescript-eslint/require-await
   async send(to: string, message: RenderedMessage): Promise<SendResult> {
     if (this.config.get<string>('NODE_ENV') !== 'production') {
       this.logger.log(`WHATSAPP -> ${to}: ${message.body}`);
     }
-    return { providerMessageId: `wa_${randomUUID()}` };
+    // No WhatsApp provider is connected yet: record a failure, not a fake send.
+    throw new Error('whatsapp_not_configured');
   }
 }

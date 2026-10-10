@@ -7,7 +7,12 @@ import { TenantScope, TenantScopeValue } from '../../common/decorators/tenant-sc
 import { Role } from '../../common/enums/role.enum';
 import { AllCountriesService } from '../../common/tenancy/all-countries.service';
 import { DeviceUnitsService } from './device-units.service';
-import { ListDeviceUnitsDto, RegisterDeviceUnitDto, RevealImeiDto } from './dto/device-unit.dto';
+import {
+  BulkRegisterDto,
+  ListDeviceUnitsDto,
+  RegisterDeviceUnitDto,
+  RevealImeiDto,
+} from './dto/device-unit.dto';
 
 const VIEWERS = [
   Role.SuperAdmin,
@@ -39,7 +44,17 @@ export class AdminDeviceUnitsController {
     return this.units.detail(tenantId, id);
   }
 
-  @Roles(Role.SuperAdmin, Role.CountryManager, Role.Agent)
+  @Roles(Role.SuperAdmin, Role.CountryManager, Role.ProductEditor, Role.Agent)
+  @Post('bulk')
+  registerMany(
+    @TenantId() tenantId: string,
+    @CurrentUser() user: AuthUser,
+    @Body() dto: BulkRegisterDto,
+  ) {
+    return this.units.registerMany(tenantId, user, dto);
+  }
+
+  @Roles(Role.SuperAdmin, Role.CountryManager, Role.ProductEditor, Role.Agent)
   @Post()
   register(
     @TenantId() tenantId: string,

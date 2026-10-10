@@ -1,3 +1,5 @@
+import { RiskService } from '../risk/risk.service';
+import { CustomerNotifier } from '../notifications/customer-notifier.service';
 import { BadRequestException, ConflictException, Injectable } from '@nestjs/common';
 import { ApplicationStatus, ApplicationType, Prisma, Role, TradeInStatus } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
@@ -50,6 +52,8 @@ export class WebIntakeService {
     private readonly financing: FinancingService,
     private readonly lease: LeaseService,
     private readonly orders: OrdersService,
+    private readonly notifier: CustomerNotifier,
+    private readonly risk: RiskService,
   ) {}
 
   async submit(
@@ -116,6 +120,10 @@ export class WebIntakeService {
           financeMonths: dto.type === ApplicationType.financing ? dto.financeMonths : null,
           leaseMonths: dto.type === ApplicationType.lease ? dto.leaseMonths : null,
           upfrontMinor: dto.type === ApplicationType.financing ? dto.upfrontMinor : null,
+          repaymentFrequency:
+            dto.type === ApplicationType.financing
+              ? (dto.repaymentFrequency ?? 'monthly')
+              : 'monthly',
           tradeInId,
           planSnapshot: pricing.planSnapshot,
           amountMinor: pricing.amountMinor,
@@ -164,6 +172,9 @@ export class WebIntakeService {
       return created;
     });
 
+    // Website and app applicants who gave an email get a confirmation (docs/10).
+    await this.risk.assess(tenantId, app.id);
+    await this.notifier.applicationReceived(tenantId, app.id, dto.applicant.email);
     return this.result(app);
   }
 
@@ -177,9 +188,9 @@ export class WebIntakeService {
       return this.orders.webResult(existing);
     }
     const customerId = await this.customer(tenantId, phone, dto.customer);
-    return this.orders.webResult(
-      await this.orders.createFromWeb(tenantId, customerId, dto, deviceType),
-    );
+    const order = await this.orders.createFromWeb(tenantId, customerId, dto, deviceType);
+    await this.notifier.orderReceived(tenantId, order.id, dto.customer.email);
+    return this.orders.webResult(order);
   }
 
   private result(app: { id: string; reference: string | null; status: ApplicationStatus }) {
@@ -201,6 +212,7 @@ export class WebIntakeService {
         dto.financeMonths,
         dto.upfrontMinor,
         variantId,
+        dto.repaymentFrequency ?? 'monthly',
       );
       return {
         planSnapshot: snap as unknown as Prisma.InputJsonValue,
@@ -232,13 +244,22 @@ export class WebIntakeService {
     const found = await this.prisma.user.findUnique({
       where: { tenantId_phone: { tenantId, phone } },
     });
+    // Emails are unique per country: keep one only if nobody else has it (a person
+    // re-applying from a new number, or two people sharing an address).
+    const email = who.email?.trim().toLowerCase() || undefined;
+    const emailFree =
+      !!email &&
+      !(await this.prisma.user.findFirst({
+        where: { tenantId, email, ...(found ? { id: { not: found.id } } : {}) },
+        select: { id: true },
+      }));
     if (found) {
       if (found.isStaff) throw new BadRequestException('Use a customer phone number');
       await this.prisma.user.update({
         where: { id: found.id },
         data: {
           fullName: found.fullName ?? who.fullName,
-          email: found.email ?? who.email,
+          email: found.email ?? (emailFree ? email : undefined),
         },
       });
       return found.id;
@@ -248,7 +269,7 @@ export class WebIntakeService {
         tenantId,
         phone,
         fullName: who.fullName,
-        email: who.email,
+        email: emailFree ? email : null,
         roles: { create: { tenantId, role: Role.customer } },
       },
     });

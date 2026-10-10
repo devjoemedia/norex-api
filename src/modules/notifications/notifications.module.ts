@@ -1,6 +1,8 @@
 import { Module } from '@nestjs/common';
+import { MailModule } from '../../common/mail/mail.module';
 import { SmsService } from './sms.service';
 import { NotificationsService } from './notifications.service';
+import { CustomerNotifier } from './customer-notifier.service';
 import { ChannelRegistry } from './channels/channel.registry';
 import { EmailAdapter } from './channels/email.adapter';
 import { SmsAdapter } from './channels/sms.adapter';
@@ -11,6 +13,7 @@ import { AdminNotificationsController } from './admin-notifications.controller';
 import { NotificationWebhooksController } from './notification-webhooks.controller';
 
 @Module({
+  imports: [MailModule],
   controllers: [
     NotificationsController,
     AdminNotificationsController,
@@ -19,6 +22,7 @@ import { NotificationWebhooksController } from './notification-webhooks.controll
   providers: [
     SmsService,
     NotificationsService,
+    CustomerNotifier,
     ChannelRegistry,
     EmailAdapter,
     SmsAdapter,
@@ -26,6 +30,6 @@ import { NotificationWebhooksController } from './notification-webhooks.controll
     PushAdapter,
   ],
   // SmsService stays exported for auth OTP; NotificationsService is the producer API.
-  exports: [SmsService, NotificationsService],
+  exports: [SmsService, NotificationsService, CustomerNotifier],
 })
 export class NotificationsModule {}

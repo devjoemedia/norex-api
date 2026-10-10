@@ -33,14 +33,14 @@ export class AdminController {
     private readonly all: AllCountriesService,
   ) {}
 
-  @Roles(Role.SuperAdmin, Role.CountryManager, Role.ApprovalsOfficer, Role.Agent)
+  @Roles(Role.SuperAdmin, Role.CountryManager, Role.ApprovalsOfficer, Role.Agent, Role.Support)
   @AllowAllTenants()
   @Get('applications')
   applications(@TenantScope() scope: TenantScopeValue) {
     return this.all.listing(scope, (t) => this.admin.applications(t));
   }
 
-  @Roles(Role.SuperAdmin, Role.CountryManager, Role.ApprovalsOfficer, Role.Agent)
+  @Roles(Role.SuperAdmin, Role.CountryManager, Role.ApprovalsOfficer, Role.Agent, Role.Support)
   @Get('applications/:id')
   applicationDetail(@TenantId() tenantId: string, @Param('id') id: string) {
     return this.admin.applicationDetail(tenantId, id);
@@ -65,7 +65,7 @@ export class AdminController {
   }
 
   // Photo bytes for the portal, fetched with the staff bearer token (no public URL).
-  @Roles(Role.SuperAdmin, Role.CountryManager, Role.ApprovalsOfficer, Role.Agent)
+  @Roles(Role.SuperAdmin, Role.CountryManager, Role.ApprovalsOfficer, Role.Agent, Role.Support)
   @Get('applications/:id/files/:fileId')
   async applicationFile(
     @TenantId() tenantId: string,
@@ -89,6 +89,13 @@ export class AdminController {
   @Post('applications')
   createApplication(@TenantId() tenantId: string, @Body() body: never) {
     return this.admin.createApplication(tenantId, body);
+  }
+
+  // Re-run the risk checks (e.g. after the customer's other plans changed).
+  @Roles(Role.SuperAdmin, Role.CountryManager, Role.ApprovalsOfficer)
+  @Post('applications/:id/risk')
+  recheckRisk(@TenantId() tenantId: string, @Param('id') id: string) {
+    return this.admin.recheckRisk(tenantId, id);
   }
 
   @Roles(Role.SuperAdmin, Role.CountryManager, Role.ApprovalsOfficer)
@@ -161,14 +168,14 @@ export class AdminController {
     return this.admin.deleteUser(tenantId, id, roles);
   }
 
-  @Roles(Role.SuperAdmin, Role.CountryManager, Role.ApprovalsOfficer, Role.Agent)
+  @Roles(Role.SuperAdmin, Role.CountryManager, Role.ApprovalsOfficer, Role.Agent, Role.Support)
   @AllowAllTenants()
   @Get('kyc')
   kyc(@TenantScope() scope: TenantScopeValue) {
     return this.all.listing(scope, (t) => this.admin.kyc(t));
   }
 
-  @Roles(Role.SuperAdmin, Role.CountryManager, Role.ApprovalsOfficer, Role.Agent)
+  @Roles(Role.SuperAdmin, Role.CountryManager, Role.ApprovalsOfficer, Role.Agent, Role.Support)
   @Get('kyc/:id')
   kycDetail(@TenantId() tenantId: string, @Param('id') id: string) {
     return this.admin.kycDetail(tenantId, id);

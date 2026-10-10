@@ -6,19 +6,12 @@ import { StaffAuthService } from './staff-auth.service';
 import { OtpService } from './otp.service';
 import { TokenService } from './token.service';
 import { StaffInviteService } from './staff-invite.service';
-import { MailService } from '../../common/mail/mail.service';
+import { MailModule } from '../../common/mail/mail.module';
 
 @Module({
-  imports: [NotificationsModule],
+  imports: [NotificationsModule, MailModule],
   controllers: [AuthController],
-  providers: [
-    AuthService,
-    StaffAuthService,
-    OtpService,
-    TokenService,
-    StaffInviteService,
-    MailService,
-  ],
+  providers: [AuthService, StaffAuthService, OtpService, TokenService, StaffInviteService],
   exports: [TokenService, StaffInviteService],
 })
 export class AuthModule {}

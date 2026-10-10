@@ -22,6 +22,13 @@ enum Role {
   country_manager
   super_admin
   admin // delegated HQ admin; access per area in User.permissions
+  support // customer support: reads customers, applications, orders; runs tickets
+}
+
+enum RepaymentFrequency {
+  monthly
+  biweekly
+  weekly
 }
 
 enum FinanceFeeMode {
@@ -104,6 +111,10 @@ model Tenant {
   /// country is created; pre-fills the one-time catalog clone. Never used for pricing.
   startingFxPpm          Int?
   startingRoundStepMinor Int?
+  /// Finance ops (docs/23): flat delivery fee for buy now orders, and what Norex pays per sale.
+  deliveryFeeMinor       Int       @default(0)
+  agentCommissionBps     Int       @default(0) // agent's share of the cash price, per sale they make
+  partnerOutletFeeBps    Int       @default(0) // partner outlet's share, per plan handed over there
   createdAt              DateTime  @default(now())
   updatedAt              DateTime  @updatedAt
 
@@ -276,33 +287,38 @@ model Session {
 /// A financing / lease / trade-in application. Pricing is snapshotted at submit so
 /// later catalog/rate edits never change a submitted application.
 model Application {
-  id            String            @id @default(uuid())
-  tenantId      String
-  reference     String? // stamped at submit, e.g. BNP-AB12C9
-  customerId    String
-  type          ApplicationType
-  status        ApplicationStatus @default(draft)
-  deviceId      String
-  variantId     String? // chosen storage size; prices the plan when set
-  planSnapshot  Json? // {term, deposit, monthly, ...} captured at submit
-  financeMonths Int?
-  leaseMonths   Int?
-  upfrontMinor  Int? // customer-chosen upfront (20–80% of cash); null = the plan's deposit
-  tradeInId     String?
-  amountMinor   Int?
-  currency      String?
-  reviewerId    String?
-  submittedAt   DateTime?
-  decidedAt     DateTime?
-  decidedById   String?
-  declineReason String?
-  source        String? // "self" (customer) | "admin" (created on behalf)
-  channel       String? // where it came from: website | mobile_app | portal | api (docs/19)
-  deviceType    String? // mobile | tablet | desktop, from the applicant's browser/app
-  createdById   String? // admin/staff who created it when source = admin
-  intakeCipher  String? // encrypted website form (payout, fulfilment, consents, files) when source = web
-  createdAt     DateTime          @default(now())
-  updatedAt     DateTime          @updatedAt
+  id                 String             @id @default(uuid())
+  tenantId           String
+  reference          String? // stamped at submit, e.g. BNP-AB12C9
+  customerId         String
+  type               ApplicationType
+  status             ApplicationStatus  @default(draft)
+  deviceId           String
+  variantId          String? // chosen storage size; prices the plan when set
+  planSnapshot       Json? // {term, deposit, monthly, ...} captured at submit
+  financeMonths      Int?
+  /// Installment plans: how often the customer repays (same total, docs/09).
+  repaymentFrequency RepaymentFrequency @default(monthly)
+  /// Rule-based risk checks (docs/26): [{code, severity, label, detail}] and the overall level.
+  riskFlags          Json?
+  riskLevel          String? // low | medium | high
+  leaseMonths        Int?
+  upfrontMinor       Int? // customer-chosen upfront (20–80% of cash); null = the plan's deposit
+  tradeInId          String?
+  amountMinor        Int?
+  currency           String?
+  reviewerId         String?
+  submittedAt        DateTime?
+  decidedAt          DateTime?
+  decidedById        String?
+  declineReason      String?
+  source             String? // "self" (customer) | "admin" (created on behalf)
+  channel            String? // where it came from: website | mobile_app | portal | api (docs/19)
+  deviceType         String? // mobile | tablet | desktop, from the applicant's browser/app
+  createdById        String? // admin/staff who created it when source = admin
+  intakeCipher       String? // encrypted website form (payout, fulfilment, consents, files) when source = web
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
 
   events    ApplicationEvent[]
   documents ApplicationDocument[]
@@ -702,6 +718,7 @@ enum ScheduleStatus {
   active
   completed
   cancelled
+  written_off // unrecoverable; closed by collections (docs/24)
 }
 
 enum InstallmentStatus {
@@ -719,6 +736,7 @@ enum PaymentPurpose {
 enum PaymentChannel {
   app
   ussd
+  counter // taken by staff at an outlet (POS, docs/21)
 }
 
 enum PaymentStatus {
@@ -732,6 +750,7 @@ enum PaymentStatus {
 enum LedgerAccount {
   customer_receivable
   cash_momo
+  cash_on_hand // physical cash taken at an outlet
   deposit_liability
   refund
 }
@@ -745,17 +764,18 @@ enum LedgerDirection {
 /// activation. The snapshot (not the live catalog) is the source of truth so later
 /// rate edits never alter an active schedule.
 model RepaymentSchedule {
-  id               String         @id @default(uuid())
+  id               String             @id @default(uuid())
   tenantId         String
-  applicationId    String         @unique
+  applicationId    String             @unique
   customerId       String
   kind             ScheduleKind
   currency         String
   totalAmountMinor Int
-  status           ScheduleStatus @default(active)
-  activatedAt      DateTime       @default(now())
-  createdAt        DateTime       @default(now())
-  updatedAt        DateTime       @updatedAt
+  status           ScheduleStatus     @default(active)
+  frequency        RepaymentFrequency @default(monthly)
+  activatedAt      DateTime           @default(now())
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
 
   installments Installment[]
 
@@ -798,6 +818,8 @@ model Payment {
   purpose        PaymentPurpose
   provider       String
   channel        PaymentChannel @default(app)
+  receivedById   String? // staff who took a counter payment
+  branchId       String? // outlet where a counter payment was taken
   amountMinor    Int
   currency       String
   status         PaymentStatus  @default(initiated)
@@ -891,6 +913,13 @@ model ProviderConfig {
 enum NotificationEventKey {
   otp
   application_status
+  application_received
+  application_approved
+  application_declined
+  application_info_requested
+  order_received
+  order_ready
+  order_cancelled
   payment_reminder
   payment_receipt
   trade_in_quote_ready
@@ -1510,6 +1539,7 @@ enum OrderStatus {
 enum OrderPaymentStatus {
   unpaid
   paid
+  refunded
 }
 
 /// A cart order paid in full with cash on collection (pickup or delivery). Prices are
@@ -1529,6 +1559,10 @@ model Order {
   addressCipher    String? // delivery address, encrypted (PII)
   notes            String?
   subtotalMinor    Int
+  deliveryFeeMinor Int                @default(0) // added for delivery orders; total = subtotal + fee
+  courierName      String?
+  courierPhone     String?
+  dispatchedAt     DateTime?
   currency         String
   source           String             @default("web")
   channel          String             @default("website") // website | mobile_app | portal (docs/19)
@@ -1792,4 +1826,253 @@ model DeviceLockEvent {
   @@index([tenantId, deviceUnitId])
   @@index([tenantId, action])
   @@map("device_lock_events")
+}
+
+// ---------- Stock transfers between outlets (docs/22) ----------
+
+enum StockTransferStatus {
+  in_transit
+  received
+  cancelled
+}
+
+/// Moving in-stock phones from the warehouse (fromBranchId null) or one outlet to
+/// another. Units are `dispatched` while in transit and back to `in_stock`, at the
+/// destination, once received.
+model StockTransfer {
+  id           String              @id @default(uuid())
+  tenantId     String
+  reference    String // TRF-XXXXXX
+  fromBranchId String?
+  toBranchId   String
+  status       StockTransferStatus @default(in_transit)
+  note         String?
+  createdById  String?
+  receivedById String?
+  createdAt    DateTime            @default(now())
+  receivedAt   DateTime?
+  cancelledAt  DateTime?
+  updatedAt    DateTime            @updatedAt
+
+  units StockTransferUnit[]
+
+  @@unique([tenantId, reference])
+  @@index([tenantId, status])
+  @@index([tenantId, toBranchId])
+  @@map("stock_transfers")
+}
+
+model StockTransferUnit {
+  id         String @id @default(uuid())
+  tenantId   String
+  transferId String
+  unitId     String
+
+  transfer StockTransfer @relation(fields: [transferId], references: [id], onDelete: Cascade)
+
+  @@unique([transferId, unitId])
+  @@index([tenantId, unitId])
+  @@map("stock_transfer_units")
+}
+
+// ---------- Signed agreements (POS, docs/21) ----------
+
+/// The installment / lease agreement a customer signed at the counter: the exact text
+/// they saw, its SHA-256, and their on-screen signature (PNG).
+model Agreement {
+  id             String   @id @default(uuid())
+  tenantId       String
+  applicationId  String
+  text           String
+  textSha256     String
+  signedName     String
+  signatureImage Bytes
+  signedAt       DateTime @default(now())
+  branchId       String?
+  witnessedById  String? // the staff member who handed over
+  createdAt      DateTime @default(now())
+
+  @@unique([tenantId, applicationId])
+  @@map("agreements")
+}
+
+// ---------- Finance ops: payouts and refunds (docs/23) ----------
+
+enum PayoutStatus {
+  pending // owed, not yet in a batch
+  batched // in an open batch
+  paid
+  void
+}
+
+/// Money Norex owes for a sale: an agent's commission or a partner outlet's fee.
+model Payout {
+  id          String       @id @default(uuid())
+  tenantId    String
+  payeeType   String // agent | outlet
+  payeeId     String // User id (agent) or Branch id (outlet)
+  kind        String // commission | outlet_fee
+  sourceType  String // application | order
+  sourceId    String
+  sourceRef   String?
+  baseMinor   Int // the price the share is taken from
+  amountMinor Int
+  currency    String
+  status      PayoutStatus @default(pending)
+  batchId     String?
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  @@unique([tenantId, sourceType, sourceId, kind])
+  @@index([tenantId, status])
+  @@index([tenantId, payeeId])
+  @@map("payouts")
+}
+
+/// Payouts to one payee, settled together with one transfer.
+model PayoutBatch {
+  id          String    @id @default(uuid())
+  tenantId    String
+  reference   String // PAY-XXXXXX
+  payeeType   String
+  payeeId     String
+  totalMinor  Int
+  currency    String
+  status      String    @default("open") // open | paid
+  method      String? // momo | bank | cash
+  paymentRef  String?
+  createdById String?
+  paidById    String?
+  paidAt      DateTime?
+  createdAt   DateTime  @default(now())
+
+  @@unique([tenantId, reference])
+  @@index([tenantId, status])
+  @@map("payout_batches")
+}
+
+enum RefundStatus {
+  requested
+  approved
+  rejected
+}
+
+/// A refund on a paid buy now order: requested by operations, decided by a Country
+/// Manager or Super Admin (docs/23).
+model OrderRefund {
+  id            String       @id @default(uuid())
+  tenantId      String
+  orderId       String
+  amountMinor   Int
+  reason        String
+  returnUnits   Boolean      @default(true) // phones come back into stock
+  status        RefundStatus @default(requested)
+  method        String? // cash | momo | bank
+  paymentRef    String?
+  requestedById String?
+  decidedById   String?
+  decisionNote  String?
+  decidedAt     DateTime?
+  createdAt     DateTime     @default(now())
+
+  @@index([tenantId, status])
+  @@index([tenantId, orderId])
+  @@map("order_refunds")
+}
+
+// ---------- Collections and recovery (docs/24) ----------
+
+enum RecoveryStatus {
+  open // overdue, being worked
+  promised // customer promised to pay by a date
+  assigned // sent to an agent / recovery officer for a visit or repossession
+  closed
+}
+
+/// One overdue plan being chased. Opened automatically once a payment is a week
+/// late; closes itself when the plan is back up to date.
+model RecoveryCase {
+  id                 String         @id @default(uuid())
+  tenantId           String
+  scheduleId         String
+  applicationId      String
+  customerId         String
+  status             RecoveryStatus @default(open)
+  assignedToId       String?
+  promiseDate        DateTime?
+  promiseAmountMinor Int?
+  outcome            String? // paid_up | repossessed | written_off | other
+  openedAt           DateTime       @default(now())
+  closedAt           DateTime?
+  updatedAt          DateTime       @updatedAt
+
+  notes RecoveryNote[]
+
+  @@index([tenantId, status])
+  @@index([tenantId, scheduleId])
+  @@index([tenantId, assignedToId])
+  @@map("recovery_cases")
+}
+
+model RecoveryNote {
+  id        String   @id @default(uuid())
+  tenantId  String
+  caseId    String
+  kind      String // call | visit | message | promise | assign | system | close
+  text      String
+  authorId  String?
+  createdAt DateTime @default(now())
+
+  case RecoveryCase @relation(fields: [caseId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, caseId])
+  @@map("recovery_notes")
+}
+
+// ---------- Customer support (docs/25) ----------
+
+enum TicketStatus {
+  open
+  pending // waiting on the customer or another team
+  resolved
+}
+
+/// A customer's question or problem, tracked until resolved.
+model SupportTicket {
+  id           String       @id @default(uuid())
+  tenantId     String
+  reference    String // TKT-XXXXXX
+  customerId   String?
+  subject      String
+  category     String // payment | device | application | order | account | other
+  priority     String       @default("normal") // low | normal | high
+  channel      String // phone | whatsapp | walk_in | email
+  status       TicketStatus @default(open)
+  assignedToId String?
+  createdById  String?
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+  resolvedAt   DateTime?
+
+  messages TicketMessage[]
+
+  @@unique([tenantId, reference])
+  @@index([tenantId, status])
+  @@index([tenantId, customerId])
+  @@map("support_tickets")
+}
+
+model TicketMessage {
+  id        String   @id @default(uuid())
+  tenantId  String
+  ticketId  String
+  authorId  String?
+  body      String
+  internal  Boolean  @default(true) // staff note (customer replies come later with customer accounts)
+  createdAt DateTime @default(now())
+
+  ticket SupportTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, ticketId])
+  @@map("ticket_messages")
 }

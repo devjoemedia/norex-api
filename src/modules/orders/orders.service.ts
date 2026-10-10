@@ -1,6 +1,10 @@
+import { AuditService } from '../../common/audit/audit.service';
+import { PayoutsService } from '../payouts/payouts.service';
+import { CustomerNotifier } from '../notifications/customer-notifier.service';
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -36,6 +40,9 @@ export class OrdersService {
     private readonly kyc: KycService,
     private readonly imei: ImeiService,
     private readonly config: ConfigService,
+    private readonly notifier: CustomerNotifier,
+    private readonly payouts: PayoutsService,
+    private readonly audit: AuditService,
   ) {}
 
   // ---------- website ----------
@@ -70,6 +77,9 @@ export class OrdersService {
       throw new BadRequestException('Items are priced in different currencies');
     }
     const f = dto.fulfilment;
+    // Delivery orders pay the country's flat delivery fee on top (docs/23).
+    const tenant = await this.prisma.tenant.findUnique({ where: { id: tenantId } });
+    const deliveryFeeMinor = f.method === 'delivery' ? (tenant?.deliveryFeeMinor ?? 0) : 0;
 
     return this.prisma.$transaction(async (tx) => {
       const order = await tx.order.create({
@@ -86,6 +96,7 @@ export class OrdersService {
           channel: 'website',
           deviceType,
           subtotalMinor: lines.reduce((n, l) => n + l.lineTotalMinor, 0),
+          deliveryFeeMinor,
           currency,
           items: {
             create: lines.map((l) => ({
@@ -132,7 +143,8 @@ export class OrdersService {
       id: o.id,
       reference: o.reference,
       status: o.status,
-      totalMinor: o.subtotalMinor,
+      totalMinor: orderTotal(o),
+      deliveryFeeMinor: o.deliveryFeeMinor,
       currency: o.currency,
     };
   }
@@ -174,7 +186,7 @@ export class OrdersService {
           phone: c?.phone ?? null,
           items: o.items.map((i) => `${i.quantity} × ${i.name}${i.storage ? ` ${i.storage}` : ''}`),
           units: o.items.reduce((n, i) => n + i.quantity, 0),
-          totalMinor: o.subtotalMinor,
+          totalMinor: orderTotal(o),
           currency: o.currency,
           status: o.status,
           paymentStatus: o.paymentStatus,
@@ -217,6 +229,32 @@ export class OrdersService {
       paymentMethod: o.paymentMethod,
       currency: o.currency,
       subtotalMinor: o.subtotalMinor,
+      deliveryFeeMinor: o.deliveryFeeMinor,
+      totalMinor: orderTotal(o),
+      courier: o.courierName
+        ? {
+            name: o.courierName,
+            phone: o.courierPhone,
+            dispatchedAt: o.dispatchedAt?.toISOString() ?? null,
+          }
+        : null,
+      refunds: (
+        await this.prisma.orderRefund.findMany({
+          where: { tenantId, orderId: o.id },
+          orderBy: { createdAt: 'desc' },
+        })
+      ).map((r) => ({
+        id: r.id,
+        amountMinor: r.amountMinor,
+        reason: r.reason,
+        returnUnits: r.returnUnits,
+        status: r.status,
+        method: r.method,
+        paymentRef: r.paymentRef,
+        decisionNote: r.decisionNote,
+        createdAt: r.createdAt.toISOString(),
+        decidedAt: r.decidedAt?.toISOString() ?? null,
+      })),
       paidAmountMinor: o.paidAmountMinor,
       paidAt: o.paidAt?.toISOString() ?? null,
       customer: {
@@ -311,6 +349,8 @@ export class OrdersService {
       },
       dto.reason,
     );
+    if (to === OrderStatus.ready) await this.notifier.orderReady(tenantId, id);
+    if (to === OrderStatus.cancelled) await this.notifier.orderCancelled(tenantId, id);
     return this.detail(tenantId, id);
   }
 
@@ -321,7 +361,7 @@ export class OrdersService {
       throw new BadRequestException('Confirm the order before taking payment');
     }
     if (o.paymentStatus === OrderPaymentStatus.paid) return this.detail(tenantId, id);
-    if (amountMinor < o.subtotalMinor) {
+    if (amountMinor < orderTotal(o)) {
       throw new BadRequestException(
         'Cash orders are paid in full: the amount must cover the total',
       );
@@ -444,7 +484,210 @@ export class OrdersService {
         },
       });
     });
+    // The agent who handed over earns their commission on the sale (docs/23).
+    await this.payouts.accrue({
+      tenantId,
+      sourceType: 'order',
+      sourceId: id,
+      sourceRef: o.reference,
+      baseMinor: o.subtotalMinor,
+      currency: o.currency,
+      sellerId: actor.id,
+      branchId: o.branchId,
+    });
     return this.detail(tenantId, id);
+  }
+
+  // ---------- delivery (docs/23) ----------
+  /** Who is delivering a ready delivery order; the order is then on its way. */
+  async assignCourier(
+    tenantId: string,
+    actor: Actor,
+    id: string,
+    input: { name: string; phone?: string },
+  ) {
+    const o = await this.load(tenantId, id);
+    if (o.fulfilmentMethod !== 'delivery') throw new BadRequestException('This order is a pickup');
+    if (o.status !== OrderStatus.ready) throw new BadRequestException('Mark the order ready first');
+    await this.prisma.order.update({
+      where: { id },
+      data: {
+        courierName: input.name.trim(),
+        courierPhone: input.phone?.trim() || null,
+        dispatchedAt: new Date(),
+      },
+    });
+    await this.audit.write(tenantId, {
+      actorId: actor.id,
+      actorRole: actor.roles.join(','),
+      action: 'order.courier_assigned',
+      entity: 'order',
+      entityId: id,
+      after: { courier: input.name.trim() },
+    });
+    return this.detail(tenantId, id);
+  }
+
+  // ---------- refunds (docs/23) ----------
+  /** Operations asks for a refund on a paid order; a manager decides. */
+  async requestRefund(
+    tenantId: string,
+    actor: Actor,
+    id: string,
+    input: { amountMinor?: number; reason: string; returnUnits: boolean },
+  ) {
+    const o = await this.load(tenantId, id);
+    if (o.paymentStatus !== OrderPaymentStatus.paid) {
+      throw new BadRequestException('Only a paid order can be refunded');
+    }
+    const open = await this.prisma.orderRefund.findFirst({
+      where: { tenantId, orderId: id, status: 'requested' },
+    });
+    if (open) throw new ConflictException('A refund is already waiting for a decision');
+    const paid = o.paidAmountMinor ?? orderTotal(o);
+    const amountMinor = input.amountMinor ?? paid;
+    if (amountMinor <= 0 || amountMinor > paid) {
+      throw new BadRequestException('The refund must be more than zero and at most what was paid');
+    }
+    const refund = await this.prisma.orderRefund.create({
+      data: {
+        tenantId,
+        orderId: id,
+        amountMinor,
+        reason: input.reason.trim(),
+        returnUnits: input.returnUnits,
+        requestedById: actor.id,
+      },
+    });
+    await this.audit.write(tenantId, {
+      actorId: actor.id,
+      actorRole: actor.roles.join(','),
+      action: 'order.refund_requested',
+      entity: 'order',
+      entityId: id,
+      after: { refundId: refund.id, amountMinor, returnUnits: input.returnUnits },
+    });
+    return this.detail(tenantId, id);
+  }
+
+  async decideRefund(
+    tenantId: string,
+    actor: Actor,
+    refundId: string,
+    input: { decision: 'approve' | 'reject'; note?: string; method?: string; paymentRef?: string },
+  ) {
+    const r = await this.prisma.orderRefund.findFirst({ where: { tenantId, id: refundId } });
+    if (!r) throw new NotFoundException('Refund not found');
+    if (r.status !== 'requested') throw new ConflictException('This refund was already decided');
+    if (r.requestedById === actor.id && !actor.roles.includes('super_admin')) {
+      throw new ForbiddenException('Someone other than the requester must decide a refund');
+    }
+    if (input.decision === 'reject') {
+      await this.prisma.orderRefund.update({
+        where: { id: r.id },
+        data: {
+          status: 'rejected',
+          decidedById: actor.id,
+          decidedAt: new Date(),
+          decisionNote: input.note?.trim() || null,
+        },
+      });
+    } else {
+      if (!input.method) throw new BadRequestException('Say how the money was returned');
+      const o = await this.load(tenantId, r.orderId);
+      await this.prisma.$transaction(async (tx) => {
+        await tx.orderRefund.update({
+          where: { id: r.id },
+          data: {
+            status: 'approved',
+            decidedById: actor.id,
+            decidedAt: new Date(),
+            decisionNote: input.note?.trim() || null,
+            method: input.method,
+            paymentRef: input.paymentRef?.trim() || null,
+          },
+        });
+        const full = r.amountMinor >= (o.paidAmountMinor ?? orderTotal(o));
+        await tx.order.update({
+          where: { id: o.id },
+          data: {
+            ...(full ? { paymentStatus: OrderPaymentStatus.refunded } : {}),
+            ...(o.status !== OrderStatus.completed
+              ? {
+                  status: OrderStatus.cancelled,
+                  cancelledAt: new Date(),
+                  cancelReason: `Refunded: ${r.reason}`,
+                }
+              : {}),
+          },
+        });
+        if (r.returnUnits) {
+          const units = await tx.deviceUnit.findMany({ where: { tenantId, orderId: o.id } });
+          await tx.deviceUnit.updateMany({
+            where: { tenantId, orderId: o.id },
+            data: {
+              status: 'in_stock',
+              customerId: null,
+              orderId: null,
+              activatedAt: null,
+              branchId: o.branchId,
+            },
+          });
+          for (const u of units) {
+            if (u.variantId) {
+              await tx.deviceVariant.updateMany({
+                where: { tenantId, id: u.variantId },
+                data: { stockQty: { increment: 1 } },
+              });
+            }
+          }
+        }
+        await tx.orderEvent.create({
+          data: {
+            tenantId,
+            orderId: o.id,
+            fromStatus: o.status,
+            toStatus: o.status === OrderStatus.completed ? o.status : OrderStatus.cancelled,
+            actorId: actor.id,
+            note: `Refund approved: ${r.reason}`,
+          },
+        });
+      });
+      // A refunded sale earns no commission.
+      await this.payouts.voidFor(tenantId, 'order', r.orderId);
+    }
+    await this.audit.write(tenantId, {
+      actorId: actor.id,
+      actorRole: actor.roles.join(','),
+      action: `order.refund_${input.decision === 'approve' ? 'approved' : 'rejected'}`,
+      entity: 'order',
+      entityId: r.orderId,
+      after: { refundId: r.id, amountMinor: r.amountMinor, method: input.method ?? null },
+    });
+    return this.detail(tenantId, r.orderId);
+  }
+
+  /** Refunds waiting for a manager. */
+  async pendingRefunds(tenantId: string) {
+    const rows = await this.prisma.orderRefund.findMany({
+      where: { tenantId, status: 'requested' },
+      orderBy: { createdAt: 'asc' },
+    });
+    const orders = await this.prisma.order.findMany({
+      where: { tenantId, id: { in: rows.map((r) => r.orderId) } },
+      select: { id: true, reference: true, currency: true },
+    });
+    const ref = new Map(orders.map((o) => [o.id, o]));
+    return rows.map((r) => ({
+      id: r.id,
+      orderId: r.orderId,
+      reference: ref.get(r.orderId)?.reference ?? null,
+      amountMinor: r.amountMinor,
+      currency: ref.get(r.orderId)?.currency ?? null,
+      reason: r.reason,
+      returnUnits: r.returnUnits,
+      createdAt: r.createdAt.toISOString(),
+    }));
   }
 
   // ---------- internals ----------
@@ -502,4 +745,9 @@ export class OrdersService {
     });
     return new Map(users.map((u) => [u.id, u]));
   }
+}
+
+/** What the customer pays: items plus any delivery fee. */
+export function orderTotal(o: { subtotalMinor: number; deliveryFeeMinor: number }): number {
+  return o.subtotalMinor + o.deliveryFeeMinor;
 }

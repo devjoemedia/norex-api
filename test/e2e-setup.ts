@@ -119,6 +119,8 @@ export async function createApp(
   process.env.JWT_SECRET = 'test-secret-at-least-32-characters-long!!';
   process.env.JWT_ACCESS_TTL = '900';
   process.env.CORS_ORIGINS = '';
+  // The auth e2e tests cover two-factor, which is off by default.
+  process.env.STAFF_2FA_ENABLED = 'true';
 
   const sms = new SmsCapture();
   const moduleRef = await Test.createTestingModule({ imports: [AppModule] })
