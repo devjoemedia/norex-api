@@ -1,10 +1,19 @@
 // CORS allowlist from CORS_ORIGINS: exact origins, or `https://*.example.pages.dev`
 // for Cloudflare preview deploys. Never a bare wildcard.
 export function parseOrigins(raw: string | undefined): string[] {
-  return (raw ?? '')
-    .split(',')
-    .map((s) => s.trim().replace(/\/+$/, ''))
-    .filter((s) => s && s !== '*');
+  return (
+    (raw ?? '')
+      .split(',')
+      // Dashboards often keep pasted quotes: "https://a.com, https://b.com" -> two origins.
+      .map((s) =>
+        s
+          .trim()
+          .replace(/^["']+|["']+$/g, '')
+          .trim()
+          .replace(/\/+$/, ''),
+      )
+      .filter((s) => s && s !== '*')
+  );
 }
 
 export function isAllowedOrigin(origin: string, allowed: string[]): boolean {

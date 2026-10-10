@@ -13,6 +13,17 @@ describe('cors allowlist', () => {
     ]);
   });
 
+  it('strips quotes pasted around the whole value or each origin', () => {
+    expect(parseOrigins('"https://admin.norexgambia.com,http://localhost:3100"')).toEqual([
+      'https://admin.norexgambia.com',
+      'http://localhost:3100',
+    ]);
+    expect(parseOrigins('\'https://a.com/\' , "http://localhost:3100"')).toEqual([
+      'https://a.com',
+      'http://localhost:3100',
+    ]);
+  });
+
   it('matches exact origins', () => {
     expect(isAllowedOrigin('https://admin.norexgambia.com', allowed)).toBe(true);
     expect(isAllowedOrigin('http://localhost:3100', allowed)).toBe(true);

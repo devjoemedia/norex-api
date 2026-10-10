@@ -36,8 +36,14 @@ async function bootstrap() {
   if (!origins.length && config.get<string>('NODE_ENV') === 'production') {
     app.get(Logger).warn('CORS_ORIGINS is empty: browsers (the admin portal) are blocked');
   }
+  // Logged so a "blocked by CORS" in the browser can be checked against the host's logs.
+  app.get(Logger).log(`CORS allowed origins: ${origins.join(', ') || '(none)'}`);
   app.enableCors({
-    origin: (origin, callback) => callback(null, !origin || isAllowedOrigin(origin, origins)),
+    origin: (origin, callback) => {
+      const ok = !origin || isAllowedOrigin(origin, origins);
+      if (!ok) app.get(Logger).warn(`CORS: rejected origin ${origin} (not in CORS_ORIGINS)`);
+      callback(null, ok);
+    },
     credentials: true,
     methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     maxAge: 600, // cache preflights for 10 minutes
