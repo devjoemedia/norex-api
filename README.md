@@ -12,7 +12,7 @@ modules described in [`docs/`](../docs) (auth, catalog, applications, payments, 
   throttling, and the guard chain **JWT → Tenant → Roles**.
 - **Multi-tenancy**: host→tenant middleware + `PrismaService.runInTenantContext()` that
   sets the Postgres GUC for **Row-Level Security** (`prisma/rls.sql`).
-- **Prisma** schema (`Tenant`, `AuditLog`) + seed (Gambia + Ghana tenants).
+- **Prisma** schema (`Tenant`, `AuditLog`) + seed (Gambia, Sierra Leone, Guinea, Liberia and the `hq` tenant; the old `ghana` tenant is deactivated).
 - **Health**: `GET /api/health/live`, `GET /api/health/ready` (checks the DB).
 - **Structured logging** (pino) with PII redaction; Docker + docker-compose.
 
