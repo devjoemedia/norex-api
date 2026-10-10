@@ -1,5 +1,10 @@
+# Prisma's query engine links against OpenSSL, which Alpine doesn't ship. Install it in
+# BOTH stages: at build time so `prisma generate` picks the openssl-3 engine, and at
+# runtime so that engine can load (otherwise: "libssl.so.1.1: No such file").
+
 # --- build ---
 FROM node:20-alpine AS build
+RUN apk add --no-cache openssl
 WORKDIR /app
 COPY package*.json ./
 RUN npm ci
@@ -10,6 +15,7 @@ RUN npm run build
 
 # --- runtime (non-root, minimal) ---
 FROM node:20-alpine AS runtime
+RUN apk add --no-cache openssl
 WORKDIR /app
 ENV NODE_ENV=production
 COPY package*.json ./

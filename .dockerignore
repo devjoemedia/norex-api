@@ -1,0 +1,10 @@
+# Keep the image clean and secret-free: deps are installed inside the image, and
+# env files (incl. .env.neon.local with database passwords) must never be baked in.
+node_modules
+dist
+.env
+.env.*
+!.env.example
+.git
+coverage
+*.log
