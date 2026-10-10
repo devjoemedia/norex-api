@@ -40,8 +40,16 @@ const schema = z.object({
 
 export type AppConfig = z.infer<typeof schema>;
 
+// Hosting dashboards often keep a variable that's present but blank (e.g. REDIS_URL="").
+// Blank means "not set", so optional settings fall back instead of failing as invalid.
+export function withoutBlanks(config: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(config).filter(([, v]) => !(typeof v === 'string' && v.trim() === '')),
+  );
+}
+
 export function validateEnv(config: Record<string, unknown>): AppConfig {
-  const parsed = schema.safeParse(config);
+  const parsed = schema.safeParse(withoutBlanks(config));
   if (!parsed.success) {
     const issues = parsed.error.issues
       .map((i) => `  - ${i.path.join('.')}: ${i.message}`)
