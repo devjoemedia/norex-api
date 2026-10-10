@@ -7,8 +7,11 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  // Runtime: pooled connection as the restricted norex_app role (prisma/roles.sql).
+  url       = env("DATABASE_URL")
+  // Schema changes (db push): direct, non-pooled connection as the database owner.
+  directUrl = env("DIRECT_URL")
 }
 
 enum Role {

@@ -1,16 +1,21 @@
-# Render Blueprint for norex-api. Full steps: ../docs/17-deploy-render-cloudflare.md
+# Render Blueprint for norex-api (Node runtime; database on Neon, not Render). Full steps: ../docs/17-deploy-render-cloudflare.md
 # Render → New → Blueprint → pick this repo. Secrets marked `sync: false` are asked for
 # on first deploy; set them in the dashboard afterwards.
 services:
   - type: web
     name: norex-api
     runtime: node
-    plan: starter # pre-deploy commands need a paid instance
+    plan: free # sleeps after 15 min idle; no pre-deploy step or Shell on free
     region: frankfurt
     # Dev deps (Nest CLI, Prisma CLI) are needed to build, even with NODE_ENV=production.
-    buildCommand: npm ci --include=dev && npx prisma generate && npm run build
-    # The project uses `prisma db push` (no migrations yet); it refuses data-loss changes.
-    preDeployCommand: npx prisma db push --skip-generate
+    # The free plan has no pre-deploy step, so the schema update runs at the end of the
+    # build, as the Neon owner over DIRECT_URL: `db push` refuses data-loss changes and
+    # the guard/RLS SQL files are idempotent (safe on every deploy).
+    buildCommand: >-
+      npm ci --include=dev && npx prisma generate && npm run build &&
+      npx prisma db push --skip-generate &&
+      npx prisma db execute --url "$DIRECT_URL" --file prisma/currency-guard.sql &&
+      npx prisma db execute --url "$DIRECT_URL" --file prisma/rls.sql
     startCommand: npm run start:prod
     healthCheckPath: /api/health/ready
     envVars:
@@ -18,10 +23,13 @@ services:
         value: production
       - key: NODE_VERSION
         value: "20"
+      # Neon (Frankfurt). Runtime = POOLED host (-pooler) as norex_app, with
+      # ?sslmode=require&pgbouncer=true&connect_timeout=15
       - key: DATABASE_URL
-        fromDatabase:
-          name: norex-db
-          property: connectionString
+        sync: false
+      # Schema changes = DIRECT host (no -pooler) as neondb_owner, ?sslmode=require
+      - key: DIRECT_URL
+        sync: false
       # Never rotate these two after launch: they key OTPs, KYC hashes and encrypted data.
       - key: JWT_SECRET
         generateValue: true
@@ -41,9 +49,3 @@ services:
       - key: THROTTLE_LIMIT
         value: "120"
 
-databases:
-  - name: norex-db
-    plan: basic-256mb
-    region: frankfurt
-    databaseName: norex
-    user: norex

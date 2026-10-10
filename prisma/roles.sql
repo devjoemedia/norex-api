@@ -7,7 +7,8 @@
 SELECT format('CREATE ROLE norex_app LOGIN PASSWORD %L NOSUPERUSER NOBYPASSRLS', :'app_password')
 WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'norex_app') \gexec
 
-ALTER ROLE norex_app NOSUPERUSER NOBYPASSRLS;
+-- No ALTER ROLE here: CREATE ROLE above already sets NOSUPERUSER NOBYPASSRLS, and on
+-- managed Postgres (Neon) the owner isn't a superuser, so ALTER ... SUPERUSER fails.
 GRANT USAGE ON SCHEMA public TO norex_app;
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO norex_app;
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO norex_app;
