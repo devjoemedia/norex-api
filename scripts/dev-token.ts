@@ -35,6 +35,8 @@ async function main() {
       sub: user.id,
       tenantId: tenant.id,
       roles: user.roles.map((r) => r.role),
+      // Delegated admins carry their areas, as a real sign-in does.
+      perms: user.roles.some((r) => r.role === 'admin') ? (user.permissions ?? {}) : undefined,
       sid: `dev-${randomUUID()}`,
     },
     secret,

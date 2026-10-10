@@ -14,6 +14,7 @@ import {
   ApplicationStatus,
   PaymentPurpose,
   PaymentStatus,
+  Prisma,
   Role,
 } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
@@ -24,6 +25,7 @@ import { KycService } from '../kyc/kyc.service';
 import { ConfigService } from '@nestjs/config';
 import { deviceImageUrl } from '../../common/catalog/device-image';
 import { summariseOrigins } from './channel-analytics';
+import { AdminPermissions, normalizePermissions } from '../../common/auth/admin-permissions';
 
 // Read models for the admin portal's list pages. Tenant-scoped, plain Prisma
 // reads shaped for the tables (rows + stat cards). Mirrors DashboardService.
@@ -460,6 +462,10 @@ export class AdminService {
         : null,
       department: DEPARTMENT_FOR[role] ?? 'Operations',
       permissions: PERMISSIONS_FOR[role] ?? ['Read'],
+      // Delegated admins: their level per area; null for every other role.
+      adminAccess: user.roles.some((r) => r.role === Role.admin)
+        ? normalizePermissions(user.permissions)
+        : null,
       recentActivity: activity.map((a) => ({
         id: a.id,
         at: a.createdAt.toISOString(),
@@ -494,6 +500,9 @@ export class AdminService {
         role: primaryRole(u.roles.map((r) => r.role)),
         country: tenant?.country ?? '—',
         status: u.status,
+        ...(u.roles.some((r) => r.role === Role.admin)
+          ? { adminAccess: normalizePermissions(u.permissions) }
+          : {}),
       })),
     };
   }
@@ -1227,11 +1236,20 @@ export class AdminService {
   // password here, returned once for the admin to share. Customers use phone OTP.
   async createUser(
     tenantId: string,
-    dto: { name: string; email?: string; phone?: string; role: string; status?: string },
+    dto: {
+      name: string;
+      email?: string;
+      phone?: string;
+      role: string;
+      status?: string;
+      adminAccess?: unknown;
+    },
     actorRoles: string[],
   ) {
     const role = enumRole(dto.role);
     assertCanGrant(actorRoles, [role]);
+    const adminAccess =
+      role === Role.admin ? await this.adminAccessFor(tenantId, dto.adminAccess) : null;
     const isStaff = role !== Role.customer;
     const email = dto.email?.trim().toLowerCase() || null;
     if (isStaff && !email) throw new BadRequestException('Staff need an email address to sign in');
@@ -1247,6 +1265,7 @@ export class AdminService {
         phone: dto.phone || null,
         isStaff,
         status: dto.status === 'suspended' ? 'suspended' : 'active',
+        permissions: adminAccess ?? undefined,
         passwordHash: oneTimePassword
           ? await argon2.hash(oneTimePassword, { type: argon2.argon2id })
           : null,
@@ -1255,6 +1274,20 @@ export class AdminService {
     });
     await this.audit(tenantId, 'user.created', 'user', user.id);
     return { id: user.id, ...(oneTimePassword ? { email, oneTimePassword } : {}) };
+  }
+
+  // A delegated admin lives in HQ (they work across countries) and needs at least
+  // one area; anything outside the known areas is dropped by normalizePermissions.
+  private async adminAccessFor(tenantId: string, input: unknown): Promise<AdminPermissions> {
+    const tenant = await this.tenant(tenantId);
+    if (tenant?.isCountry !== false) {
+      throw new BadRequestException('Admins are created in HQ, not in a country');
+    }
+    const access = normalizePermissions(input);
+    if (Object.keys(access).length === 0) {
+      throw new BadRequestException('Give the admin access to at least one area');
+    }
+    return access;
   }
 
   // New one-time password; clears TOTP + recovery codes and signs the user out
@@ -1291,11 +1324,28 @@ export class AdminService {
   async updateUser(
     tenantId: string,
     id: string,
-    dto: { name?: string; email?: string; phone?: string; role?: string; status?: string },
+    dto: {
+      name?: string;
+      email?: string;
+      phone?: string;
+      role?: string;
+      status?: string;
+      adminAccess?: unknown;
+    },
     actorRoles: string[],
   ) {
     if (dto.role) assertCanGrant(actorRoles, [enumRole(dto.role)]);
     const before = await this.manageableUser(tenantId, id, actorRoles);
+    const nextRole = dto.role ? enumRole(dto.role) : null;
+    const isAdmin = nextRole
+      ? nextRole === Role.admin
+      : before.roles.some((r) => r.role === Role.admin);
+    // Only a Super Admin changes what an admin can reach (manageableUser already
+    // refuses everyone else, since only they can grant the admin role).
+    const adminAccess =
+      isAdmin && (dto.adminAccess !== undefined || nextRole === Role.admin)
+        ? await this.adminAccessFor(tenantId, dto.adminAccess ?? before.permissions)
+        : null;
     const becomesStaff = !!dto.role && enumRole(dto.role) !== Role.customer;
     if (becomesStaff && !(dto.email ?? before.email)) {
       throw new BadRequestException('Staff need an email address to sign in');
@@ -1308,8 +1358,13 @@ export class AdminService {
         phone: dto.phone ?? undefined,
         status:
           dto.status === 'suspended' ? 'suspended' : dto.status === 'active' ? 'active' : undefined,
+        // Set for admins; cleared when someone stops being one.
+        permissions: adminAccess ?? (isAdmin ? undefined : Prisma.DbNull),
       },
     });
+    if (adminAccess) {
+      await this.audit(tenantId, 'user.admin_access_changed', 'user', id);
+    }
     if (dto.role) {
       const role = enumRole(dto.role);
       await this.prisma.userRole.deleteMany({ where: { userId: id } });
@@ -1579,6 +1634,7 @@ export class AdminService {
 // them. product_editor/country_manager both fold into Operations; agent → Agent.
 const ROLE_LABELS: Record<string, string> = {
   super_admin: 'Super Admin',
+  admin: 'Admin',
   country_manager: 'Country Manager',
   approvals_officer: 'Compliance',
   product_editor: 'Operations',
@@ -1588,6 +1644,7 @@ const ROLE_LABELS: Record<string, string> = {
 
 const DEPARTMENT_FOR: Record<string, string> = {
   'Super Admin': 'Executive',
+  Admin: 'Administration',
   'Country Manager': 'Country Management',
   Operations: 'Operations & Finance',
   Compliance: 'Risk & Compliance',
@@ -1597,6 +1654,7 @@ const DEPARTMENT_FOR: Record<string, string> = {
 
 const PERMISSIONS_FOR: Record<string, Array<string>> = {
   'Super Admin': ['Create', 'Read', 'Update', 'Delete'],
+  Admin: ['Create', 'Read', 'Update', 'Delete'],
   'Country Manager': ['Create', 'Read', 'Update', 'Delete'],
   Operations: ['Create', 'Read', 'Update'],
   Compliance: ['Read', 'Update'],
@@ -1615,6 +1673,8 @@ function enumRole(business: string): Role {
   switch (business) {
     case 'Super Admin':
       return Role.super_admin;
+    case 'Admin':
+      return Role.admin;
     case 'Country Manager':
       return Role.country_manager;
     // Operations runs catalog, stock and outlets — the product_editor permission set.
@@ -1634,6 +1694,7 @@ function enumRole(business: string): Role {
 function primaryRole(roles: Array<string>): string {
   const priority = [
     'super_admin',
+    'admin',
     'country_manager',
     'approvals_officer',
     'product_editor',

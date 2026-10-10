@@ -33,6 +33,7 @@ const STAFF_ROLES = [
   'country_manager',
   'product_editor',
   'super_admin',
+  'admin',
 ];
 const REF_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 

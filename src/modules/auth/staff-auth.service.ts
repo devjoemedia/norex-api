@@ -7,6 +7,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import * as argon2 from 'argon2';
 import { authenticator } from 'otplib';
+import { AdminPermissions, normalizePermissions } from '../../common/auth/admin-permissions';
 import { PrismaService } from '../../database/prisma.service';
 import { AuditService } from '../../common/audit/audit.service';
 import { keyedHash, randomTokenHex } from '../../common/crypto/hash.util';
@@ -29,7 +30,13 @@ type LoginChallenge =
   | { status: '2fa_required'; challengeId: string };
 
 export interface StaffAuthResult extends TokenPair {
-  user: { id: string; email: string | null; fullName: string | null; roles: string[] };
+  user: {
+    id: string;
+    email: string | null;
+    fullName: string | null;
+    roles: string[];
+    permissions?: AdminPermissions;
+  };
   recoveryCodes?: string[];
 }
 
@@ -176,10 +183,19 @@ export class StaffAuthService {
     }
 
     const roles = user.roles.map((r) => r.role);
-    const pair = await this.tokens.issue({ userId: user.id, tenantId, roles, ...ctx });
+    const pair = await this.tokens.issue({
+      userId: user.id,
+      tenantId,
+      roles,
+      permissions: user.permissions,
+      ...ctx,
+    });
+    const permissions = roles.includes('admin')
+      ? normalizePermissions(user.permissions)
+      : undefined;
     return {
       ...pair,
-      user: { id: user.id, email: user.email, fullName: user.fullName, roles },
+      user: { id: user.id, email: user.email, fullName: user.fullName, roles, permissions },
       recoveryCodes,
     };
   }

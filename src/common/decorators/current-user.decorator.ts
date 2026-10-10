@@ -4,6 +4,8 @@ export interface AuthUser {
   id: string;
   tenantId: string;
   roles: string[];
+  /** Delegated admins only (src/common/auth/admin-permissions.ts). */
+  permissions?: Record<string, string>;
   sid?: string;
 }
 

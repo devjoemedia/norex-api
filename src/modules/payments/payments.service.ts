@@ -37,7 +37,7 @@ interface Actor {
   roles: string[];
 }
 
-const STAFF_READ = ['agent', 'approvals_officer', 'country_manager', 'super_admin'];
+const STAFF_READ = ['agent', 'approvals_officer', 'country_manager', 'super_admin', 'admin'];
 
 // Snapshot fields the schedule generator needs (docs/04/05). Stored immutably at
 // application submit, so later rate edits never change an active schedule.

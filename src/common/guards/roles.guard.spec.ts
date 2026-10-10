@@ -31,4 +31,26 @@ describe('RolesGuard', () => {
     );
     expect(guard([Role.CountryManager]).canActivate(ctx(['country_manager']))).toBe(true);
   });
+
+  it('lets a delegated admin in by area and level', () => {
+    const adminCtx = (method: string, path: string, permissions: Record<string, string>) =>
+      ({
+        switchToHttp: () => ({
+          getRequest: () => ({ method, route: { path }, user: { roles: ['admin'], permissions } }),
+        }),
+        getHandler: () => undefined,
+        getClass: () => undefined,
+      }) as unknown as ExecutionContext;
+    const g = guard([Role.CountryManager, Role.SuperAdmin]);
+    expect(g.canActivate(adminCtx('GET', '/api/admin/orders', { orders: 'view' }))).toBe(true);
+    expect(() =>
+      g.canActivate(adminCtx('POST', '/api/admin/orders/:id/action', { orders: 'view' })),
+    ).toThrow(ForbiddenException);
+    expect(() =>
+      g.canActivate(adminCtx('GET', '/api/admin/countries', { staff: 'manage' })),
+    ).toThrow(ForbiddenException);
+    expect(() => guard([Role.Customer]).canActivate(adminCtx('GET', '/api/me', {}))).toThrow(
+      ForbiddenException,
+    );
+  });
 });

@@ -4,6 +4,7 @@ import { JwtService } from '@nestjs/jwt';
 import { randomUUID } from 'node:crypto';
 import { PrismaService } from '../../database/prisma.service';
 import { keyedHash, randomTokenHex, safeEqualHex } from '../../common/crypto/hash.util';
+import { AdminPermissions, normalizePermissions } from '../../common/auth/admin-permissions';
 
 export interface TokenPair {
   accessToken: string;
@@ -16,8 +17,15 @@ interface IssueInput {
   userId: string;
   tenantId: string;
   roles: string[];
+  /** Delegated admins' areas (User.permissions); ignored for every other role. */
+  permissions?: unknown;
   ip?: string;
   userAgent?: string;
+}
+
+// Only a delegated admin carries `perms`; everyone else is governed by role alone.
+function permsClaim(roles: string[], permissions: unknown): AdminPermissions | undefined {
+  return roles.includes('admin') ? normalizePermissions(permissions) : undefined;
 }
 
 @Injectable()
@@ -36,12 +44,14 @@ export class TokenService {
     userId: string;
     tenantId: string;
     roles: string[];
+    permissions?: unknown;
     sid: string;
   }) {
     return this.jwt.signAsync({
       sub: input.userId,
       tenantId: input.tenantId,
       roles: input.roles,
+      perms: permsClaim(input.roles, input.permissions),
       sid: input.sid,
     });
   }
@@ -125,7 +135,14 @@ export class TokenService {
 
     const roles = user.roles.map((r) => r.role);
     return {
-      accessToken: await this.signAccess({ userId: user.id, tenantId, roles, sid }),
+      // Re-read on every refresh, so a permission change lands within one access-token TTL.
+      accessToken: await this.signAccess({
+        userId: user.id,
+        tenantId,
+        roles,
+        permissions: user.permissions,
+        sid,
+      }),
       refreshToken: `${sid}.${newSecret}`,
       tokenType: 'Bearer',
       expiresIn: this.config.get<number>('JWT_ACCESS_TTL', 900),

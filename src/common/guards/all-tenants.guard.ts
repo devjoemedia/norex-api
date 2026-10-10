@@ -28,8 +28,9 @@ export class AllTenantsGuard implements CanActivate {
         'Pick one country for this action (X-Tenant: all is read-only)',
       );
     }
-    if (!req.user?.roles?.includes(Role.SuperAdmin)) {
-      throw new ForbiddenException('Only a super admin can view all countries');
+    const roles: string[] = req.user?.roles ?? [];
+    if (!roles.includes(Role.SuperAdmin) && !roles.includes(Role.Admin)) {
+      throw new ForbiddenException('Only HQ admins can view all countries');
     }
     return true;
   }

@@ -9,6 +9,7 @@ interface JwtPayload {
   sub: string;
   tenantId: string;
   roles?: string[];
+  perms?: Record<string, string>;
   sid?: string;
 }
 
@@ -40,6 +41,7 @@ export class JwtAuthGuard implements CanActivate {
         id: payload.sub,
         tenantId: payload.tenantId,
         roles: payload.roles ?? [],
+        permissions: payload.perms,
         sid: payload.sid,
       };
       // The signed-in user (not X-Actor-* hints) is who audit entries record.

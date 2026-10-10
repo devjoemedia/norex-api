@@ -30,6 +30,7 @@ export const STAFF_DECISION_ROLES: Role[] = [
   Role.approvals_officer,
   Role.country_manager,
   Role.super_admin,
+  Role.admin,
 ];
 
 export function isDecisionStaff(roles: string[]): boolean {

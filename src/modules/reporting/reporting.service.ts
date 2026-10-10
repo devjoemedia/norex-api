@@ -78,7 +78,8 @@ export class ReportingService {
   ) {}
 
   private isSuperAdmin(roles: string[]): boolean {
-    return roles.includes('super_admin');
+    // Delegated admins only get here with the reports area (RolesGuard).
+    return roles.includes('super_admin') || roles.includes('admin');
   }
 
   // Parses + enforces the bounded date window. Days are normalized to UTC midnight

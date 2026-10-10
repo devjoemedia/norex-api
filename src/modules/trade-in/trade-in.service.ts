@@ -25,7 +25,7 @@ interface Actor {
 }
 
 // Staff who see the tenant-wide queue (valuation is further gated to agent/country_manager).
-const STAFF_ROLES = ['agent', 'country_manager', 'super_admin'];
+const STAFF_ROLES = ['agent', 'country_manager', 'super_admin', 'admin'];
 const REF_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 
 @Injectable()

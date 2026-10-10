@@ -11,7 +11,8 @@ export class TenantGuard implements CanActivate {
     const user = req.user;
     if (!user) return true; // public route or unauthenticated (handled by JwtAuthGuard)
 
-    if (user.roles?.includes(Role.SuperAdmin)) return true;
+    // Delegated admins work across countries too; RolesGuard limits them by area.
+    if (user.roles?.includes(Role.SuperAdmin) || user.roles?.includes(Role.Admin)) return true;
 
     const resolved = req.tenantId as string | undefined;
     if (resolved && user.tenantId && resolved !== user.tenantId) {

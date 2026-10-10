@@ -21,6 +21,7 @@ enum Role {
   product_editor
   country_manager
   super_admin
+  admin // delegated HQ admin; access per area in User.permissions
 }
 
 enum FinanceFeeMode {
@@ -166,6 +167,8 @@ model User {
   passwordHash  String? // Argon2id, staff only
   totpSecret    String? // encrypted (AES-256-GCM), staff only
   totpEnabledAt DateTime?
+  /// Delegated admins only: { area: "view" | "manage" } (src/common/auth/admin-permissions.ts)
+  permissions   Json?
   createdAt     DateTime   @default(now())
   updatedAt     DateTime   @updatedAt
 

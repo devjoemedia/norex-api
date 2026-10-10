@@ -25,7 +25,7 @@ interface Actor {
   roles: string[];
 }
 
-const CROSS_BRANCH_ROLES = ['country_manager', 'super_admin'];
+const CROSS_BRANCH_ROLES = ['country_manager', 'super_admin', 'admin'];
 // Application states an agent may pick up at the branch (post-approval).
 const PICKABLE: ApplicationStatus[] = [
   ApplicationStatus.approved,
