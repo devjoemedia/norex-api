@@ -12,7 +12,8 @@ export class VerifyIdDto {
 
 export class HandoverDto {
   @IsOptional() @IsString() @Length(0, 120) serial?: string;
-  @IsOptional() @IsString() @Length(0, 120) imei?: string;
+  // Validated (15 digits + Luhn) and encrypted by ImeiService; never stored plain.
+  @IsOptional() @IsString() @Length(15, 24) imei?: string;
   @IsOptional() @IsString() @Length(0, 500) note?: string;
 }
 

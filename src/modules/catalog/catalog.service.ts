@@ -39,7 +39,9 @@ export class CatalogService {
     const inStock = active.filter((v) => v.stockQty > 0);
     const pool = inStock.length ? inStock : active;
     const minDelta = pool.length ? Math.min(...pool.map((v) => v.priceDeltaMinor)) : 0;
+    const cheapest = pool.find((v) => v.priceDeltaMinor === minDelta);
     const primary = d.media.find((m) => m.isPrimary) ?? d.media[0];
+    const web = (d.specs as { webImages?: { image?: string; cutout?: string } } | null)?.webImages;
     return {
       id: d.id,
       slug: d.slug,
@@ -55,7 +57,13 @@ export class CatalogService {
       financeEligible: d.financeEligible,
       leaseEligible: d.leaseEligible,
       tradeInEligible: d.tradeInEligible,
+      featured: d.featured,
+      storage: cheapest?.storage ?? null,
+      color: cheapest?.color ?? null,
       image: primary ? this.media.publicUrl(primary.s3Key) : null,
+      // Website photo paths (e.g. /devices/x.png), served by the website.
+      webImage: web?.image ?? null,
+      webCutout: web?.cutout ?? web?.image ?? null,
     };
   }
 
@@ -85,7 +93,9 @@ export class CatalogService {
 
   // ---------- public reads (published + in-stock) ----------
   private async queryPublic(tenantId: string, q: PublicListDto, extra?: Prisma.DeviceWhereInput) {
-    const variantSome: Prisma.DeviceVariantWhereInput = { isActive: true, stockQty: { gt: 0 } };
+    const variantSome: Prisma.DeviceVariantWhereInput = q.includeOutOfStock
+      ? { isActive: true }
+      : { isActive: true, stockQty: { gt: 0 } };
     if (q.storage) variantSome.storage = q.storage;
     if (q.color) variantSome.color = q.color;
 
@@ -204,6 +214,31 @@ export class CatalogService {
 
   // Pricing snapshot for financing/lease (docs/04, docs/05). Returns the published
   // device's price, category, eligibility and stock, or null when not usable.
+  // The website knows devices by slug + storage size (+ colour); the API by ids. Returns
+  // the published device, the matching variant (if any) and its cash price.
+  async resolveForWeb(
+    tenantId: string,
+    slug: string,
+    storage?: string | null,
+    color?: string | null,
+  ) {
+    const device = await this.prisma.device.findFirst({
+      where: { tenantId, slug, status: DeviceStatus.published },
+      include: { variants: { where: { isActive: true } } },
+    });
+    if (!device) throw new BadRequestException('This device is not available');
+    const norm = (s: string) => s.replace(/\s+/g, '').toLowerCase();
+    const size = storage ? norm(storage) : null;
+    const tint = color ? norm(color) : null;
+    const sized = size ? device.variants.filter((v) => v.storage && norm(v.storage) === size) : [];
+    const variant = sized.find((v) => tint && v.color && norm(v.color) === tint) ?? sized[0];
+    return {
+      device,
+      variant: variant ?? null,
+      cashPriceMinor: device.cashPriceMinor + (variant?.priceDeltaMinor ?? 0),
+    };
+  }
+
   // A variantId prices the chosen storage size (base price + its delta).
   async getDeviceForPricing(tenantId: string, deviceId: string, variantId?: string | null) {
     const d = await this.prisma.device.findFirst({

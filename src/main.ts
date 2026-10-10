@@ -19,6 +19,8 @@ async function bootstrap() {
   // Website applications carry compressed photos; registered before Nest's default
   // 100kb parser so only this route accepts large bodies (docs/16).
   app.use('/api/web', json({ limit: '12mb' }));
+  app.use('/api/app', json({ limit: '12mb' }));
+  app.useBodyParser('json', { limit: '1mb' });
   app.useLogger(app.get(Logger));
 
   const config = app.get(ConfigService);
@@ -48,6 +50,8 @@ async function bootstrap() {
       'X-Actor-Id',
       'Idempotency-Key',
       'X-Request-Id',
+      'X-Client-Channel',
+      'X-Client-Device',
     ],
   });
 

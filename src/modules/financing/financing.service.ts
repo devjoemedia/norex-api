@@ -103,6 +103,35 @@ export class FinancingService {
     };
   }
 
+  // Cheapest monthly for many devices in one call (catalog cards: "from X/mo").
+  async fromQuotes(tenantId: string, deviceIds: string[]) {
+    const plan = await this.activePlan(tenantId);
+    const out: Record<
+      string,
+      { months: number; monthlyMinor: number; depositMinor: number } | null
+    > = {};
+    await Promise.all(
+      deviceIds.map(async (id) => {
+        const device = await this.catalog.getDeviceForPricing(tenantId, id);
+        if (!plan || !device || !device.financeEligible || !this.ruleAllows(device, plan.rules)) {
+          out[id] = null;
+          return;
+        }
+        const best = plan.terms
+          .map((t) => this.option(device, t))
+          .sort((a, b) => a.monthlyMinor - b.monthlyMinor)[0];
+        out[id] = best
+          ? {
+              months: best.months,
+              monthlyMinor: best.monthlyMinor,
+              depositMinor: best.depositMinor,
+            }
+          : null;
+      }),
+    );
+    return { from: out };
+  }
+
   async quote(tenantId: string, deviceId: string, months: number, upfrontMinor?: number) {
     const { device, term } = await this.resolve(tenantId, deviceId, months);
     this.checkUpfront(device, term, upfrontMinor);

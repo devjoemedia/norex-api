@@ -8,6 +8,19 @@ import {
 } from '@nestjs/common';
 import { Request, Response } from 'express';
 
+// Express body-parser rejections (too large, bad JSON) are client errors, not 500s.
+// Fixed messages: the parser's own text can echo the request body.
+const PARSER_MESSAGES: Record<string, string> = {
+  'entity.too.large': 'Request body is too large',
+  'entity.parse.failed': 'Request body is not valid JSON',
+};
+
+function bodyParserError(e: unknown): { status: number; message: string } | null {
+  const err = e as { type?: string; status?: number } | null;
+  if (!err?.type || !(err.type in PARSER_MESSAGES) || typeof err.status !== 'number') return null;
+  return { status: err.status, message: PARSER_MESSAGES[err.type] };
+}
+
 // Uniform, safe error responses — never leak stack traces, SQL, or internals.
 @Catch()
 export class AllExceptionsFilter implements ExceptionFilter {
@@ -18,10 +31,13 @@ export class AllExceptionsFilter implements ExceptionFilter {
     const res = ctx.getResponse<Response>();
     const req = ctx.getRequest<Request & { id?: string }>();
 
+    const parser = bodyParserError(exception);
     const status =
-      exception instanceof HttpException ? exception.getStatus() : HttpStatus.INTERNAL_SERVER_ERROR;
+      exception instanceof HttpException
+        ? exception.getStatus()
+        : (parser?.status ?? HttpStatus.INTERNAL_SERVER_ERROR);
 
-    let message: string | string[] = 'Internal server error';
+    let message: string | string[] = parser?.message ?? 'Internal server error';
     if (exception instanceof HttpException) {
       const body = exception.getResponse();
       message =

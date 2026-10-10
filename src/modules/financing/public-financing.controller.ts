@@ -9,6 +9,16 @@ import { QuoteDto } from './dto/finance.dto';
 export class PublicFinancingController {
   constructor(private readonly financing: FinancingService) {}
 
+  // ?deviceIds=a,b,c (max 200): cheapest monthly per device, for catalog cards.
+  @Public()
+  @Get('from')
+  from(@TenantId() tenantId: string, @Query('deviceIds') deviceIds?: string) {
+    const ids = [...new Set((deviceIds ?? '').split(',').map((s) => s.trim()))]
+      .filter((s) => /^[0-9a-f-]{36}$/i.test(s))
+      .slice(0, 200);
+    return this.financing.fromQuotes(tenantId, ids);
+  }
+
   @Public()
   @Get('plans/:deviceId/options')
   options(@TenantId() tenantId: string, @Param('deviceId', ParseUUIDPipe) deviceId: string) {

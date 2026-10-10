@@ -1,22 +1,16 @@
 /**
- * Device unit (IMEI) back-fill + demo seed for the admin portal.
+ * Demo device units (IMEI) for the admin portal.
  *
  *   BOOTSTRAP_ADMIN_TENANT=gambia npm run seed:device-units
  *
- * Two parts:
- *  A. Back-fill — for every existing `Fulfilment` that already carries an `imei`,
- *     materialise the persistent `DeviceUnit` (idempotent, keyed on tenantId+imei).
- *     This is the real path; run it once after `prisma db push` adds the tables.
- *  B. Demo top-up — the demo seed creates `pending` fulfilments WITHOUT imeis, so
- *     part A alone yields no units to look at. This generates realistic device units
- *     (active handovers with mixed lock states + lock events, plus in-stock and
- *     dispatched stock) so Device Lock (12), Inventory & Dispatch (08) and the
- *     recovery table (11) are demoable.
+ * Generates realistic units: active handovers with mixed lock states + lock events,
+ * plus in-stock and dispatched stock, so Devices, Device Lock and the recovery table
+ * are demoable. IMEIs are valid (Luhn) and sealed exactly like the API seals them
+ * (encrypted + keyed hash, docs/18), so it needs JWT_SECRET (and ENCRYPTION_KEY if
+ * the API uses one) plus DATABASE_URL in the environment.
  *
  * DEV ONLY: like `seed:demo`, this WIPES the tenant's `device_units` +
- * `device_lock_events` first, then reseeds. Do NOT run against production — a real
- * production back-fill would run part A only, without the wipe. Requires DATABASE_URL
- * in the environment (standalone scripts do not auto-load .env).
+ * `device_lock_events` first. Real units come from stock intake and hand-overs.
  */
 import { faker } from '@faker-js/faker';
 import {
@@ -25,11 +19,11 @@ import {
   DeviceLockAction,
   DeviceLockState,
   DeviceUnitStatus,
-  FulfilmentStatus,
   LockActionSource,
   LockProvider,
 } from '@prisma/client';
 import { systemPrisma } from '../src/database/system-client';
+import { sealImei } from '../src/modules/device-units/imei.service';
 
 // RLS is on (prisma/rls.sql): scripts work across every country.
 const prisma = systemPrisma();
@@ -39,56 +33,39 @@ function pick<T>(arr: ReadonlyArray<T>): T {
   return arr[Math.floor(Math.random() * arr.length)]!;
 }
 
-const imei = () => faker.string.numeric(15);
+const SECRETS = {
+  jwtSecret: process.env.JWT_SECRET ?? '',
+  encryptionKey: process.env.ENCRYPTION_KEY,
+};
+
+// A random IMEI with a correct Luhn check digit.
+function randomImei(): string {
+  const body = faker.string.numeric(14);
+  let sum = 0;
+  for (let i = 0; i < 14; i++) {
+    let d = Number(body[i]);
+    if (i % 2 === 1) {
+      d *= 2;
+      if (d > 9) d -= 9;
+    }
+    sum += d;
+  }
+  return body + String((10 - (sum % 10)) % 10);
+}
 const serial = () => faker.string.alphanumeric(10).toUpperCase();
 
 async function main() {
   const tenant = await prisma.tenant.findUnique({ where: { subdomain: TENANT_SUB } });
-  if (!tenant) throw new Error(`Tenant "${TENANT_SUB}" not found. Run \`npm run prisma:seed\` first.`);
+  if (!tenant)
+    throw new Error(`Tenant "${TENANT_SUB}" not found. Run \`npm run prisma:seed\` first.`);
+  if (!SECRETS.jwtSecret) throw new Error('Set JWT_SECRET (same value as the API) to seal IMEIs.');
   const tenantId = tenant.id;
+  const imei = () => sealImei(tenantId, randomImei(), SECRETS);
   console.log(`Back-filling device units for tenant ${TENANT_SUB}…`);
 
   // Wipe (dev only). Events first — they FK to units.
   await prisma.deviceLockEvent.deleteMany({ where: { tenantId } });
   await prisma.deviceUnit.deleteMany({ where: { tenantId } });
-
-  // --- Part A: real back-fill from fulfilments that already have an imei ---------
-  const withImei = await prisma.fulfilment.findMany({
-    where: { tenantId, imei: { not: null } },
-  });
-  let backfilled = 0;
-  for (const f of withImei) {
-    const app = f.applicationId
-      ? await prisma.application.findFirst({ where: { id: f.applicationId, tenantId } })
-      : null;
-    await prisma.deviceUnit.upsert({
-      where: { tenantId_imei: { tenantId, imei: f.imei! } },
-      create: {
-        tenantId,
-        imei: f.imei!,
-        serial: f.serial,
-        deviceId: f.deviceId ?? app?.deviceId ?? '',
-        customerId: app?.customerId ?? null,
-        applicationId: f.applicationId,
-        fulfilmentId: f.id,
-        branchId: f.branchId,
-        status:
-          f.status === FulfilmentStatus.fulfilled
-            ? DeviceUnitStatus.active
-            : DeviceUnitStatus.dispatched,
-        activatedAt: f.fulfilledAt,
-      },
-      update: {
-        serial: f.serial ?? undefined,
-        deviceId: f.deviceId ?? app?.deviceId ?? undefined,
-        customerId: app?.customerId ?? undefined,
-        applicationId: f.applicationId,
-        fulfilmentId: f.id,
-        branchId: f.branchId,
-      },
-    });
-    backfilled++;
-  }
 
   // --- Part B: demo top-up ------------------------------------------------------
   const [devices, branches, activeApps] = await Promise.all([
@@ -127,7 +104,7 @@ async function main() {
     const unit = await prisma.deviceUnit.create({
       data: {
         tenantId,
-        imei: imei(),
+        ...imei(),
         serial: serial(),
         deviceId: app.deviceId,
         customerId: app.customerId,
@@ -136,7 +113,8 @@ async function main() {
         status: DeviceUnitStatus.active,
         lockState,
         lockProvider: provider,
-        enrollment: Math.random() < 0.9 ? DeviceEnrollmentStatus.enrolled : DeviceEnrollmentStatus.failed,
+        enrollment:
+          Math.random() < 0.9 ? DeviceEnrollmentStatus.enrolled : DeviceEnrollmentStatus.failed,
         activatedAt: faker.date.recent({ days: 60 }),
         lastLockAt: lockedAt,
         lastLockAction: action,
@@ -177,7 +155,7 @@ async function main() {
         await prisma.deviceUnit.create({
           data: {
             tenantId,
-            imei: imei(),
+            ...imei(),
             serial: serial(),
             deviceId: pick(devices).id,
             status: DeviceUnitStatus.in_stock,
@@ -189,7 +167,7 @@ async function main() {
         await prisma.deviceUnit.create({
           data: {
             tenantId,
-            imei: imei(),
+            ...imei(),
             serial: serial(),
             deviceId: pick(devices).id,
             branchId: b.id,
@@ -202,7 +180,7 @@ async function main() {
   }
 
   console.log(
-    `Done: ${backfilled} back-filled from fulfilments; demo — ${active} active ` +
+    `Done: ${active} active ` +
       `(${soft} soft-locked, ${hard} hard-locked, ${events} lock events), ` +
       `${inStock} in-stock, ${dispatched} dispatched.`,
   );

@@ -44,6 +44,9 @@ importers:
       compression:
         specifier: ^1.7.5
         version: 1.8.2(supports-color@8.1.1)
+      express:
+        specifier: ^4.22.1
+        version: 4.22.1(supports-color@8.1.1)
       helmet:
         specifier: ^8.0.0
         version: 8.3.0

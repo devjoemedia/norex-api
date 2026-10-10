@@ -27,6 +27,8 @@ import { ReportingModule } from './modules/reporting/reporting.module';
 import { AdminModule } from './modules/admin/admin.module';
 import { CountriesModule } from './modules/countries/countries.module';
 import { WebIntakeModule } from './modules/web-intake/web-intake.module';
+import { DeviceUnitsModule } from './modules/device-units/device-units.module';
+import { OrdersModule } from './modules/orders/orders.module';
 import { PaymentsModule } from './modules/payments/payments.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
@@ -50,6 +52,7 @@ import { AllTenantsGuard } from './common/guards/all-tenants.guard';
             '*.password',
             '*.phone',
             '*.idNumber',
+            '*.imei',
             '*.token',
           ],
           censor: '[redacted]',
@@ -97,6 +100,8 @@ import { AllTenantsGuard } from './common/guards/all-tenants.guard';
     AdminModule,
     CountriesModule,
     WebIntakeModule,
+    DeviceUnitsModule,
+    OrdersModule,
   ],
   providers: [
     // Guard chain order: throttle -> authenticate -> tenant match -> role.

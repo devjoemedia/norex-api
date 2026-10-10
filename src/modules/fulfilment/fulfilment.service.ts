@@ -1,4 +1,5 @@
 import {
+  ConflictException,
   BadRequestException,
   ForbiddenException,
   Injectable,
@@ -16,6 +17,7 @@ import { PrismaService } from '../../database/prisma.service';
 import { AuditService } from '../../common/audit/audit.service';
 import { ApplicationsService } from '../applications/applications.service';
 import { KycService } from '../kyc/kyc.service';
+import { ImeiService } from '../device-units/imei.service';
 import { HandoverDto, VerifyIdDto } from './dto/fulfilment.dto';
 
 interface Actor {
@@ -37,6 +39,7 @@ export class FulfilmentService {
     private readonly audit: AuditService,
     private readonly applications: ApplicationsService,
     private readonly kyc: KycService,
+    private readonly imei: ImeiService,
   ) {}
 
   // The branch this agent staffs. Branch scope is resource-level, enforced here — an
@@ -151,50 +154,48 @@ export class FulfilmentService {
     // Activation owns its own transaction (schedule + app→active + lease for leases).
     const schedule = await this.applications.activate(tenantId, actor, applicationId);
 
-    // Mark fulfilled and, when an IMEI was captured, materialise the persistent
-    // DeviceUnit (the serialized asset behind the catalog SKU) in the same
-    // transaction. Keyed on (tenantId, imei) so retries upsert rather than duplicate.
+    // Mark fulfilled and, when an IMEI was captured, bind the serialized DeviceUnit in
+    // the same transaction: a unit already received into stock becomes active, else
+    // one is created. The IMEI is stored encrypted + hashed (docs/18), never plain.
     // Remote-lock enrollment stays `not_enrolled` until a device-control provider is
     // wired (Device Lock / POS step 4 — docs/features/12, 21, 22).
+    const sealed = dto.imei ? this.imei.seal(tenantId, dto.imei) : null;
     const updated = await this.prisma.$transaction(async (tx) => {
-      const uf = await tx.fulfilment.update({
+      let deviceUnitId: string | null = null;
+      if (sealed) {
+        const existing = await tx.deviceUnit.findUnique({
+          where: { tenantId_imeiHash: { tenantId, imeiHash: sealed.imeiHash } },
+        });
+        if (existing?.customerId && existing.customerId !== app.customerId) {
+          throw new ConflictException('This IMEI is already assigned to another customer');
+        }
+        const holder = {
+          serial: dto.serial ?? existing?.serial ?? null,
+          deviceId: f.deviceId ?? app.deviceId,
+          variantId: app.variantId ?? existing?.variantId ?? null,
+          customerId: app.customerId,
+          applicationId,
+          fulfilmentId: f.id,
+          branchId,
+          status: DeviceUnitStatus.active,
+          activatedAt: new Date(),
+        };
+        const unit = existing
+          ? await tx.deviceUnit.update({ where: { id: existing.id }, data: holder })
+          : await tx.deviceUnit.create({ data: { tenantId, ...sealed, ...holder } });
+        deviceUnitId = unit.id;
+      }
+      return tx.fulfilment.update({
         where: { id: f.id },
         data: {
           status: FulfilmentStatus.fulfilled,
           fulfilledAt: new Date(),
           serial: dto.serial ?? null,
-          imei: dto.imei ?? null,
+          imeiLast4: sealed?.imeiLast4 ?? null,
+          deviceUnitId,
           notes: dto.note ?? f.notes,
         },
       });
-      if (dto.imei) {
-        await tx.deviceUnit.upsert({
-          where: { tenantId_imei: { tenantId, imei: dto.imei } },
-          create: {
-            tenantId,
-            imei: dto.imei,
-            serial: dto.serial ?? null,
-            deviceId: f.deviceId ?? app.deviceId,
-            customerId: app.customerId,
-            applicationId,
-            fulfilmentId: f.id,
-            branchId,
-            status: DeviceUnitStatus.active,
-            activatedAt: new Date(),
-          },
-          update: {
-            serial: dto.serial ?? undefined,
-            deviceId: f.deviceId ?? app.deviceId,
-            customerId: app.customerId,
-            applicationId,
-            fulfilmentId: f.id,
-            branchId,
-            status: DeviceUnitStatus.active,
-            activatedAt: new Date(),
-          },
-        });
-      }
-      return uf;
     });
     await this.audit.write(tenantId, {
       actorId: actor.id,
@@ -206,8 +207,8 @@ export class FulfilmentService {
         applicationId,
         branchId,
         serial: dto.serial ?? null,
-        imei: dto.imei ?? null,
-        deviceUnitCreated: !!dto.imei,
+        imeiLast4: sealed?.imeiLast4 ?? null,
+        deviceUnitId: updated.deviceUnitId,
       },
     });
     // TODO: notify customer of hand-over (docs/10).

@@ -1,4 +1,4 @@
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import {
   IsBoolean,
   IsEnum,
@@ -54,6 +54,11 @@ export class PublicListDto {
   @IsOptional() @Type(() => Number) @IsInt() @Min(0) minPriceMinor?: number;
   @IsOptional() @Type(() => Number) @IsInt() @Min(0) maxPriceMinor?: number;
   @IsOptional() @IsIn(['price', 'newest', 'name']) sort?: 'price' | 'newest' | 'name';
+  // Show out-of-stock devices too (the website and app list them; FLEX still applies).
+  @IsOptional()
+  @Transform(({ value }) => value === true || value === 'true' || value === '1')
+  @IsBoolean()
+  includeOutOfStock?: boolean;
 }
 
 export class AdminListDto {

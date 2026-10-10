@@ -250,6 +250,39 @@ export class KycService {
     return this.encJson(o);
   }
 
+  openJson<T>(cipher: string): T {
+    return this.decJson<T>(cipher);
+  }
+
+  // What the customer gave us, decrypted for staff on an application (ID stays masked).
+  async staffView(tenantId: string, customerId: string) {
+    const p = await this.prisma.kycProfile.findUnique({
+      where: { tenantId_customerId: { tenantId, customerId } },
+      include: { guarantor: true },
+    });
+    if (!p) return null;
+    const g = p.guarantor;
+    return {
+      idType: p.idTypeCode,
+      idLast4: p.idNumberLast4,
+      status: p.status,
+      address: p.addressCipher ? this.decJson<Record<string, unknown>>(p.addressCipher) : null,
+      employment: p.employmentCipher
+        ? this.decJson<Record<string, unknown>>(p.employmentCipher)
+        : null,
+      guarantor: g
+        ? {
+            fullName: this.decStr(g.fullNameCipher),
+            phone: this.decStr(g.phoneCipher),
+            relationship: g.relationship,
+            address: g.addressCipher
+              ? this.decJson<Record<string, unknown>>(g.addressCipher)
+              : null,
+          }
+        : null,
+    };
+  }
+
   // Website guest intake (docs/16): saves what the form collected without the
   // signed-in ID-format gate. The profile stays pending until staff review it.
   async upsertFromIntake(

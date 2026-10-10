@@ -1,4 +1,4 @@
-# Render Blueprint for norex-api (docs/16 · deploy notes in README "Deploy on Render").
+# Render Blueprint for norex-api. Full steps: ../docs/17-deploy-render-cloudflare.md
 # Render → New → Blueprint → pick this repo. Secrets marked `sync: false` are asked for
 # on first deploy; set them in the dashboard afterwards.
 services:
@@ -33,6 +33,9 @@ services:
       # Admin portal origin(s), comma-separated, e.g. https://admin.norexgambia.com
       - key: CORS_ORIGINS
         sync: false
+      # The Gambia website serves device photos for the portal.
+      - key: DEVICE_IMAGE_BASE_URL
+        value: https://norexgambia.com
       - key: TRUST_PROXY_HOPS
         value: "1"
       - key: THROTTLE_LIMIT

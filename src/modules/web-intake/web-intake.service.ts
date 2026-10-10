@@ -1,12 +1,5 @@
 import { BadRequestException, ConflictException, Injectable } from '@nestjs/common';
-import {
-  ApplicationStatus,
-  ApplicationType,
-  DeviceStatus,
-  Prisma,
-  Role,
-  TradeInStatus,
-} from '@prisma/client';
+import { ApplicationStatus, ApplicationType, Prisma, Role, TradeInStatus } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { CatalogService } from '../catalog/catalog.service';
 import { KycService } from '../kyc/kyc.service';
@@ -14,10 +7,33 @@ import { FinancingService } from '../financing/financing.service';
 import { LeaseService } from '../lease/lease.service';
 import { REFERENCE_PREFIX } from '../applications/application.constants';
 import { WebApplicationDto } from './dto/web-application.dto';
+import { OrdersService } from '../orders/orders.service';
+import { WebOrderDto } from '../orders/dto/order.dto';
 import { decodeImageDataUrl } from './intake-files';
+import type { DeviceType } from '../../common/http/client-channel';
 
 const ACTOR_ROLE = 'web';
-const norm = (s: string) => s.replace(/\s+/g, '').toLowerCase();
+
+// Who sent a guest application: the website's server, or the mobile app (docs/19).
+export interface IntakeVia {
+  channel: 'website' | 'mobile_app';
+  source: string;
+  note: string;
+  action: string;
+}
+const WEBSITE: IntakeVia = {
+  channel: 'website',
+  source: ACTOR_ROLE,
+  note: 'Submitted from the website',
+  action: 'application.submitted_from_web',
+};
+export const MOBILE_APP: IntakeVia = {
+  channel: 'mobile_app',
+  source: 'app',
+  note: 'Submitted from the mobile app',
+  action: 'application.submitted_from_app',
+};
+const toE164 = (p: string) => (p.startsWith('+') ? p : `+${p}`);
 
 interface Pricing {
   planSnapshot?: Prisma.InputJsonValue;
@@ -33,15 +49,19 @@ export class WebIntakeService {
     private readonly kyc: KycService,
     private readonly financing: FinancingService,
     private readonly lease: LeaseService,
+    private readonly orders: OrdersService,
   ) {}
 
-  async submit(tenantId: string, dto: WebApplicationDto) {
+  async submit(
+    tenantId: string,
+    dto: WebApplicationDto,
+    deviceType: DeviceType | null = null,
+    via: IntakeVia = WEBSITE,
+  ) {
     if (!dto.reference.startsWith(`${REFERENCE_PREFIX[dto.type]}-`)) {
       throw new BadRequestException('Reference does not match the application type');
     }
-    const phone = dto.applicant.phone.startsWith('+')
-      ? dto.applicant.phone
-      : `+${dto.applicant.phone}`;
+    const phone = toE164(dto.applicant.phone);
 
     // A retried submit (same reference, same phone) returns the first result.
     const existing = await this.prisma.application.findFirst({
@@ -57,9 +77,16 @@ export class WebIntakeService {
     const files = new Map(
       (dto.files ?? []).map((f) => [f.kind, decodeImageDataUrl(f.dataUrl)] as const),
     );
-    const { deviceId, variantId } = await this.resolveDevice(tenantId, dto);
+    const resolved = await this.catalog.resolveForWeb(
+      tenantId,
+      dto.device.slug,
+      dto.device.storage,
+      dto.device.color,
+    );
+    const deviceId = resolved.device.id;
+    const variantId = resolved.variant?.id ?? null;
     const pricing = await this.price(tenantId, dto, deviceId, variantId);
-    const customerId = await this.customer(tenantId, phone, dto);
+    const customerId = await this.customer(tenantId, phone, dto.applicant);
 
     if (dto.identity) {
       await this.kyc.upsertFromIntake(tenantId, customerId, {
@@ -93,7 +120,9 @@ export class WebIntakeService {
           planSnapshot: pricing.planSnapshot,
           amountMinor: pricing.amountMinor,
           currency: pricing.currency,
-          source: ACTOR_ROLE,
+          source: via.source,
+          channel: via.channel,
+          deviceType,
           intakeCipher: dto.extras ? this.kyc.sealJson(dto.extras) : null,
           submittedAt,
         },
@@ -117,16 +146,16 @@ export class WebIntakeService {
           fromStatus: ApplicationStatus.draft,
           toStatus: ApplicationStatus.submitted,
           actorId: customerId,
-          actorRole: ACTOR_ROLE,
-          note: 'Submitted from the website',
+          actorRole: via.source,
+          note: via.note,
         },
       });
       await tx.auditLog.create({
         data: {
           tenantId,
           actorId: customerId,
-          actorRole: ACTOR_ROLE,
-          action: 'application.submitted_from_web',
+          actorRole: via.source,
+          action: via.action,
           entity: 'application',
           entityId: created.id,
           after: { reference: created.reference, type: created.type },
@@ -138,25 +167,23 @@ export class WebIntakeService {
     return this.result(app);
   }
 
-  private result(app: { id: string; reference: string | null; status: ApplicationStatus }) {
-    return { id: app.id, reference: app.reference, status: app.status };
+  // A cart order. Same guest identity (phone) and retry safety as applications.
+  async submitOrder(tenantId: string, dto: WebOrderDto, deviceType: DeviceType | null = null) {
+    const phone = toE164(dto.customer.phone);
+    const existing = await this.orders.findByReference(tenantId, dto.reference);
+    if (existing) {
+      const owner = await this.prisma.user.findUnique({ where: { id: existing.customerId } });
+      if (owner?.phone !== phone) throw new ConflictException('Reference already in use');
+      return this.orders.webResult(existing);
+    }
+    const customerId = await this.customer(tenantId, phone, dto.customer);
+    return this.orders.webResult(
+      await this.orders.createFromWeb(tenantId, customerId, dto, deviceType),
+    );
   }
 
-  // The website knows devices by slug and storage size; the API by ids.
-  private async resolveDevice(tenantId: string, dto: WebApplicationDto) {
-    const device = await this.prisma.device.findFirst({
-      where: { tenantId, slug: dto.device.slug, status: DeviceStatus.published },
-      include: { variants: { where: { isActive: true } } },
-    });
-    if (!device) throw new BadRequestException('This device is not available');
-
-    const storage = dto.device.storage ? norm(dto.device.storage) : null;
-    const color = dto.device.color ? norm(dto.device.color) : null;
-    const sized = storage
-      ? device.variants.filter((v) => v.storage && norm(v.storage) === storage)
-      : [];
-    const variant = sized.find((v) => color && v.color && norm(v.color) === color) ?? sized[0];
-    return { deviceId: device.id, variantId: variant?.id ?? null };
+  private result(app: { id: string; reference: string | null; status: ApplicationStatus }) {
+    return { id: app.id, reference: app.reference, status: app.status };
   }
 
   // Server-side pricing (docs/04, docs/05): the website's numbers are never trusted.
@@ -197,7 +224,11 @@ export class WebIntakeService {
   }
 
   // No sign-in yet: the phone number is the customer's identity, as with OTP login.
-  private async customer(tenantId: string, phone: string, dto: WebApplicationDto) {
+  private async customer(
+    tenantId: string,
+    phone: string,
+    who: { fullName: string; email?: string },
+  ) {
     const found = await this.prisma.user.findUnique({
       where: { tenantId_phone: { tenantId, phone } },
     });
@@ -206,8 +237,8 @@ export class WebIntakeService {
       await this.prisma.user.update({
         where: { id: found.id },
         data: {
-          fullName: found.fullName ?? dto.applicant.fullName,
-          email: found.email ?? dto.applicant.email,
+          fullName: found.fullName ?? who.fullName,
+          email: found.email ?? who.email,
         },
       });
       return found.id;
@@ -216,8 +247,8 @@ export class WebIntakeService {
       data: {
         tenantId,
         phone,
-        fullName: dto.applicant.fullName,
-        email: dto.applicant.email,
+        fullName: who.fullName,
+        email: who.email,
         roles: { create: { tenantId, role: Role.customer } },
       },
     });

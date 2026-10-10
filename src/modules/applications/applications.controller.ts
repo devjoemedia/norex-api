@@ -14,6 +14,7 @@ import { Role } from '../../common/enums/role.enum';
 import { TenantId } from '../../common/decorators/tenant.decorator';
 import { AuthUser, CurrentUser } from '../../common/decorators/current-user.decorator';
 import { ApplicationsService } from './applications.service';
+import { channelFromHeader, deviceTypeFromClient } from '../../common/http/client-channel';
 import { CreateApplicationDto } from './dto/create-application.dto';
 import { UpdateApplicationDto } from './dto/update-application.dto';
 import { DecisionDto } from './dto/decision.dto';
@@ -31,8 +32,15 @@ export class ApplicationsController {
     @TenantId() tenantId: string,
     @CurrentUser() user: AuthUser,
     @Body() dto: CreateApplicationDto,
+    @Headers('x-client-channel') channel?: string,
+    @Headers('x-client-device') device?: string,
+    @Headers('user-agent') userAgent?: string,
   ) {
-    return this.apps.create(tenantId, user, dto);
+    // The mobile app sends X-Client-Channel: mobile-app (docs/19).
+    return this.apps.create(tenantId, user, dto, {
+      channel: channelFromHeader(channel),
+      deviceType: deviceTypeFromClient(device, userAgent),
+    });
   }
 
   @Patch(':id')

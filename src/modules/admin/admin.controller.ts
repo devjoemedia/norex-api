@@ -7,6 +7,7 @@ import {
   ParseUUIDPipe,
   Patch,
   Post,
+  Query,
   Res,
   StreamableFile,
 } from '@nestjs/common';
@@ -19,6 +20,7 @@ import { TenantScope, TenantScopeValue } from '../../common/decorators/tenant-sc
 import { Role } from '../../common/enums/role.enum';
 import { AllCountriesService } from '../../common/tenancy/all-countries.service';
 import { AdminService } from './admin.service';
+import { mergeChannelAnalytics } from './channel-analytics';
 
 // Admin portal read-models and edits for one country (X-Tenant / host). A Super Admin
 // may send `X-Tenant: all` to the list GETs marked @AllowAllTenants (docs/15).
@@ -42,6 +44,24 @@ export class AdminController {
   @Get('applications/:id')
   applicationDetail(@TenantId() tenantId: string, @Param('id') id: string) {
     return this.admin.applicationDetail(tenantId, id);
+  }
+
+  // Where requests come from (website / mobile app / portal / API), docs/19.
+  @Roles(
+    Role.SuperAdmin,
+    Role.CountryManager,
+    Role.ApprovalsOfficer,
+    Role.ProductEditor,
+    Role.Agent,
+  )
+  @AllowAllTenants()
+  @Get('analytics/channels')
+  async channelAnalytics(@TenantScope() scope: TenantScopeValue, @Query('days') days?: string) {
+    const n = [7, 30, 90].includes(Number(days)) ? Number(days) : 30;
+    const result = await this.all.perCountry(scope, (t) => this.admin.channelAnalytics(t, n));
+    return 'allCountries' in result
+      ? { ...mergeChannelAnalytics(result.countries), allCountries: true }
+      : result;
   }
 
   // Photo bytes for the portal, fetched with the staff bearer token (no public URL).

@@ -287,6 +287,8 @@ model Application {
   decidedById   String?
   declineReason String?
   source        String? // "self" (customer) | "admin" (created on behalf)
+  channel       String? // where it came from: website | mobile_app | portal | api (docs/19)
+  deviceType    String? // mobile | tablet | desktop, from the applicant's browser/app
   createdById   String? // admin/staff who created it when source = admin
   intakeCipher  String? // encrypted website form (payout, fulfilment, consents, files) when source = web
   createdAt     DateTime          @default(now())
@@ -299,6 +301,7 @@ model Application {
   @@unique([tenantId, reference])
   @@index([tenantId, status])
   @@index([tenantId, customerId])
+  @@index([tenantId, channel])
   @@map("applications")
 }
 
@@ -1468,7 +1471,8 @@ model Fulfilment {
   agentId          String?
   deviceId         String?
   serial           String?
-  imei             String?
+  imeiLast4        String? // display only; the full IMEI lives encrypted on DeviceUnit
+  deviceUnitId     String? // the serialized unit handed over
   idVerified       Boolean          @default(false)
   idVerifiedMethod IdVerifyMethod?
   status           FulfilmentStatus @default(pending)
@@ -1481,6 +1485,99 @@ model Fulfilment {
   @@index([tenantId, branchId, status])
   @@index([tenantId, agentId])
   @@map("fulfilments")
+}
+
+// ---------------- Cash orders (website cart, docs/18) ----------------
+
+enum OrderStatus {
+  placed // submitted from the website, awaiting staff confirmation
+  confirmed // stock + price confirmed with the customer
+  ready // ready for pickup / out for delivery
+  completed // paid in full and handed over (IMEIs stamped)
+  cancelled
+}
+
+enum OrderPaymentStatus {
+  unpaid
+  paid
+}
+
+/// A cart order paid in full with cash on collection (pickup or delivery). Prices are
+/// snapshotted from the catalog when placed; the website's numbers are never trusted.
+model Order {
+  id               String             @id @default(uuid())
+  tenantId         String
+  reference        String // ORD-XXXXXX, stamped by the website
+  customerId       String
+  status           OrderStatus        @default(placed)
+  paymentMethod    String             @default("cash_on_collection")
+  paymentStatus    OrderPaymentStatus @default(unpaid)
+  fulfilmentMethod String // pickup | delivery
+  region           String?
+  preferredBranch  String? // free text from the website
+  branchId         String? // outlet assigned by staff
+  addressCipher    String? // delivery address, encrypted (PII)
+  notes            String?
+  subtotalMinor    Int
+  currency         String
+  source           String             @default("web")
+  channel          String             @default("website") // website | mobile_app | portal (docs/19)
+  deviceType       String? // mobile | tablet | desktop
+  paidAmountMinor  Int?
+  paidAt           DateTime?
+  receivedById     String? // staff who took the cash
+  confirmedAt      DateTime?
+  readyAt          DateTime?
+  completedAt      DateTime?
+  cancelledAt      DateTime?
+  cancelReason     String?
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+
+  items  OrderItem[]
+  events OrderEvent[]
+
+  @@unique([tenantId, reference])
+  @@index([tenantId, status])
+  @@index([tenantId, customerId])
+  @@map("orders")
+}
+
+model OrderItem {
+  id             String  @id @default(uuid())
+  tenantId       String
+  orderId        String
+  deviceId       String
+  variantId      String?
+  name           String // snapshot of the device name
+  storage        String?
+  color          String?
+  unitPriceMinor Int
+  quantity       Int
+  lineTotalMinor Int
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, orderId])
+  @@map("order_items")
+}
+
+/// Append-only order status trail, written in the same transaction as the move.
+model OrderEvent {
+  id         String       @id @default(uuid())
+  tenantId   String
+  orderId    String
+  fromStatus OrderStatus?
+  toStatus   OrderStatus
+  actorId    String?
+  actorRole  String?
+  note       String?
+  createdAt  DateTime     @default(now())
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, orderId])
+  @@map("order_events")
 }
 
 // ---------------- Reporting & analytics (docs/13) ----------------
@@ -1581,6 +1678,7 @@ enum DeviceUnitStatus {
   allocated // reserved to an outlet / application
   dispatched // in transit to an outlet, awaiting pickup
   active // handed over to the customer, on an active loan
+  sold // sold for cash in full; tracked for warranty/theft, never locked
   returned // returned (lease end / cancellation)
   repossessed // recovered from a defaulting customer
   written_off // lost / stolen / unrecoverable (insurance claim territory)
@@ -1623,13 +1721,18 @@ enum LockActionSource {
 model DeviceUnit {
   id            String  @id @default(uuid())
   tenantId      String
-  imei          String
+  // IMEI is never stored in plain text (docs/18): AES-256-GCM cipher for staff
+  // reveal, a keyed HMAC for exact lookup + uniqueness, and last 4 for display.
+  imeiCipher    String
+  imeiHash      String
+  imeiLast4     String
   serial        String?
   deviceId      String // catalog Device (SKU)
   variantId     String? // catalog DeviceVariant
   customerId    String? // current owner (User); null while in stock
   applicationId String? // financing application it was disbursed under
   fulfilmentId  String? // the hand-over event that created it
+  orderId       String? // cash order it was sold under (status sold)
   branchId      String? // current / originating outlet
 
   status           DeviceUnitStatus       @default(in_stock)
@@ -1646,7 +1749,7 @@ model DeviceUnit {
 
   lockEvents DeviceLockEvent[]
 
-  @@unique([tenantId, imei])
+  @@unique([tenantId, imeiHash])
   @@index([tenantId, status])
   @@index([tenantId, lockState])
   @@index([tenantId, customerId])

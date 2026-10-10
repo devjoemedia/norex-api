@@ -9,10 +9,21 @@ import * as argon2 from 'argon2';
 import { generateOneTimePassword } from '../../common/crypto/one-time-password';
 import { currencyOf } from '../../common/tenancy/currency';
 import { assertCanGrant, canGrant } from '../../common/tenancy/staff-roles';
-import { ApplicationStatus, PaymentPurpose, PaymentStatus, Role } from '@prisma/client';
+import {
+  Application,
+  ApplicationStatus,
+  PaymentPurpose,
+  PaymentStatus,
+  Role,
+} from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { StorageService } from '../../common/storage/storage.service';
 import { getContext } from '../../common/context/request-context';
+import { maskImei } from '../device-units/imei.util';
+import { KycService } from '../kyc/kyc.service';
+import { ConfigService } from '@nestjs/config';
+import { deviceImageUrl } from '../../common/catalog/device-image';
+import { summariseOrigins } from './channel-analytics';
 
 // Read models for the admin portal's list pages. Tenant-scoped, plain Prisma
 // reads shaped for the tables (rows + stat cards). Mirrors DashboardService.
@@ -21,7 +32,13 @@ export class AdminService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly storage: StorageService,
+    private readonly kycProfiles: KycService,
+    private readonly config: ConfigService,
   ) {}
+
+  private imageUrl(specs: unknown): string | null {
+    return deviceImageUrl(specs, this.config.get<string>('DEVICE_IMAGE_BASE_URL'));
+  }
 
   private async tenant(tenantId: string) {
     return this.prisma.tenant.findUnique({ where: { id: tenantId } });
@@ -32,7 +49,7 @@ export class AdminService {
     const tenant = await this.tenant(tenantId);
     const currency = currencyOf(tenant);
 
-    const [rowsRaw, byStatus] = await Promise.all([
+    const [rowsRaw, byStatus, byType, orders] = await Promise.all([
       this.prisma.application.findMany({
         where: { tenantId },
         orderBy: { createdAt: 'desc' },
@@ -43,9 +60,16 @@ export class AdminService {
         where: { tenantId },
         _count: { _all: true },
       }),
+      this.prisma.application.groupBy({
+        by: ['type'],
+        where: { tenantId },
+        _count: { _all: true },
+      }),
+      this.prisma.order.count({ where: { tenantId } }),
     ]);
+    const ofType = (t: string) => byType.find((r) => r.type === t)?._count._all ?? 0;
 
-    const { userNames, deviceNames } = await this.resolveNames(
+    const { userNames, deviceNames, deviceImages } = await this.resolveNames(
       rowsRaw.map((r) => r.customerId),
       rowsRaw.map((r) => r.deviceId),
     );
@@ -68,6 +92,13 @@ export class AdminService {
         ]),
         rejected: count([ApplicationStatus.declined, ApplicationStatus.withdrawn]),
       },
+      // Website request categories for the portal tabs (cash orders live in their own table).
+      categories: {
+        financing: ofType('financing'),
+        lease: ofType('lease'),
+        trade_in: ofType('trade_in'),
+        orders,
+      },
       currency,
       rows: rowsRaw.map((r) => ({
         id: r.id,
@@ -75,10 +106,13 @@ export class AdminService {
         applicantName: userNames.get(r.customerId) ?? 'Unknown',
         type: r.type,
         assetName: deviceNames.get(r.deviceId) ?? '—',
+        assetImageUrl: deviceImages.get(r.deviceId) ?? null,
         amountMinor: r.amountMinor ?? 0,
         currency: r.currency ?? currency,
         status: r.status,
         source: r.source ?? 'self',
+        channel: r.channel ?? 'unknown',
+        deviceType: r.deviceType,
         createdAt: r.createdAt.toISOString(),
       })),
     };
@@ -125,6 +159,12 @@ export class AdminService {
           orderBy: { createdAt: 'asc' },
         }),
       ]);
+
+    // The serialized unit (IMEI) this customer is paying for, once handed over.
+    const unit = await this.prisma.deviceUnit.findFirst({
+      where: { tenantId, applicationId: app.id },
+      select: { id: true, imeiLast4: true, status: true, lockState: true },
+    });
 
     const officer = fulfilment?.agentId
       ? await this.prisma.user.findUnique({ where: { id: fulfilment.agentId } })
@@ -180,6 +220,16 @@ export class AdminService {
       timeline: buildTimeline(app.status, app.submittedAt, app.decidedAt),
       scores: { approvalProbability, risk, creditScore, similarApplications },
       files: files.map((f) => ({ ...f, createdAt: f.createdAt.toISOString() })),
+      device: await this.chosenDevice(app, device),
+      submission: await this.submission(tenantId, app, customer),
+      deviceUnit: unit
+        ? {
+            id: unit.id,
+            imeiMasked: maskImei(unit.imeiLast4),
+            status: unit.status,
+            lockState: unit.lockState,
+          }
+        : null,
       snapshot: {
         pastApplications: Math.max(0, pastApplications - 1),
         activeLoans,
@@ -188,6 +238,179 @@ export class AdminService {
         tier,
       },
     };
+  }
+
+  // The device the customer picked, with its photo (served by the website).
+  private async chosenDevice(app: Application, device: { name: string; specs: unknown } | null) {
+    if (!device) return null;
+    const variant = app.variantId
+      ? await this.prisma.deviceVariant.findUnique({ where: { id: app.variantId } })
+      : null;
+    return {
+      name: device.name,
+      imageUrl: this.imageUrl(device.specs),
+      storage: variant?.storage ?? null,
+      color: variant?.color ?? null,
+    };
+  }
+
+  // Everything the customer entered, as labelled sections for the portal (docs/16).
+  // Decrypted for staff on the application; the ID number itself stays masked.
+  private async submission(
+    tenantId: string,
+    app: Application,
+    customer: { fullName: string | null; phone: string | null; email: string | null } | null,
+  ): Promise<Array<{ title: string; rows: Array<[string, string]> }>> {
+    const [kyc, variant, tradeIn] = await Promise.all([
+      this.kycProfiles.staffView(tenantId, app.customerId),
+      app.variantId ? this.prisma.deviceVariant.findUnique({ where: { id: app.variantId } }) : null,
+      app.tradeInId ? this.prisma.tradeIn.findUnique({ where: { id: app.tradeInId } }) : null,
+    ]);
+    const intake = app.intakeCipher
+      ? this.kycProfiles.openJson<Record<string, any>>(app.intakeCipher)
+      : {};
+    const str = (v: unknown) => (v == null || v === '' ? '—' : String(v));
+    const yesNo = (v: unknown) => (v === true ? 'Yes' : v === false ? 'No' : '—');
+    const pretty = (v: unknown) =>
+      v == null || v === ''
+        ? '—'
+        : String(v)
+            .replace(/[_-]+/g, ' ')
+            .replace(/^./, (c) => c.toUpperCase());
+    const method = (v: unknown) =>
+      v === 'momo' ? 'Mobile money' : v === 'bank' ? 'Bank account' : pretty(v);
+    const sections: Array<{ title: string; rows: Array<[string, string]> }> = [];
+    const add = (title: string, rows: Array<[string, string]>) => {
+      const kept = rows.filter(([, v]) => v !== '—');
+      if (kept.length) sections.push({ title, rows: kept });
+    };
+
+    add('Personal details', [
+      ['Full name', str(customer?.fullName)],
+      ['Phone', str(customer?.phone)],
+      ['Email', str(customer?.email)],
+      ['Date of birth', str(intake.dateOfBirth)],
+      ['Residential address', str(kyc?.address?.residential)],
+      ['Live location', str(kyc?.address?.liveLocation)],
+    ]);
+    if (kyc) {
+      add('Identity', [
+        ['ID type', pretty(kyc.idType)],
+        ['ID number', kyc.idLast4 ? `•••• ${kyc.idLast4}` : '—'],
+        ['Verification', pretty(kyc.status)],
+      ]);
+    }
+    if (kyc?.employment) {
+      add('Employment and income', [
+        ['Status', str(kyc.employment.status)],
+        ['Employer', str(kyc.employment.employerName)],
+        ['Monthly income', str(kyc.employment.monthlyIncome)],
+        ['Paid', str(kyc.employment.incomeFrequency)],
+      ]);
+    }
+    if (intake.payout) {
+      add('Payment details', [
+        ['Method', method(intake.payout.method)],
+        ['Provider', str(intake.payout.provider)],
+        ['Account name', str(intake.payout.accountName)],
+        ['Account number', str(intake.payout.account)],
+      ]);
+    }
+    if (kyc?.guarantor) {
+      const gp = intake.guarantorPayout ?? {};
+      add('Guarantor', [
+        ['Name', kyc.guarantor.fullName],
+        ['Relationship', str(kyc.guarantor.relationship)],
+        ['Phone', kyc.guarantor.phone],
+        ['Address', str(kyc.guarantor.address?.text)],
+        ['Payment method', method(gp.method)],
+        ['Provider', str(gp.provider)],
+        ['Account name', str(gp.accountName)],
+        ['Account number', str(gp.account)],
+      ]);
+    }
+    add('Device chosen', [
+      ['Storage', str(variant?.storage)],
+      ['Colour', str(variant?.color)],
+      [
+        'Plan',
+        app.financeMonths
+          ? `${app.financeMonths} months`
+          : app.leaseMonths
+            ? `${app.leaseMonths}-month lease`
+            : '—',
+      ],
+    ]);
+    if (tradeIn) {
+      const acc = tradeIn.accessories as { text?: string } | null;
+      add('Phone being traded in', [
+        ['Brand', tradeIn.oldBrand],
+        ['Model', tradeIn.oldModel],
+        ['Storage', str(tradeIn.oldStorage)],
+        ['Condition', pretty(tradeIn.conditionCode)],
+        ['Accessories', str(acc?.text)],
+        ['Notes', str(tradeIn.notes)],
+      ]);
+    }
+    if (intake.fulfilment) {
+      add('Pickup or delivery', [
+        ['Method', intake.fulfilment.method === 'delivery' ? 'Delivery' : 'Pickup at a branch'],
+        ['Region', str(intake.fulfilment.region)],
+        [
+          intake.fulfilment.method === 'delivery' ? 'Address' : 'Branch',
+          str(intake.fulfilment.detail),
+        ],
+      ]);
+    }
+    if (intake.consents) {
+      const labels: Record<string, string> = {
+        terms: 'Terms accepted',
+        creditCheck: 'Credit check allowed',
+        dataProcessing: 'Data processing allowed',
+        leaseTerms: 'Lease terms accepted',
+        returnConditions: 'Return conditions accepted',
+        tradeTerms: 'Trade-in terms accepted',
+      };
+      add(
+        'Consents',
+        Object.entries(intake.consents as Record<string, unknown>).map(
+          ([k, v]) => [labels[k] ?? pretty(k), yesNo(v)] as [string, string],
+        ),
+      );
+    }
+    return sections;
+  }
+
+  // Where requests come from over the last `days` (docs/19): applications + buy now orders.
+  async channelAnalytics(tenantId: string, days: number) {
+    const since = new Date(Date.now() - days * 86_400_000);
+    const [apps, orders] = await Promise.all([
+      this.prisma.application.findMany({
+        where: { tenantId, createdAt: { gte: since } },
+        select: { type: true, channel: true, deviceType: true, createdAt: true },
+      }),
+      this.prisma.order.findMany({
+        where: { tenantId, createdAt: { gte: since } },
+        select: { channel: true, deviceType: true, createdAt: true },
+      }),
+    ]);
+    return summariseOrigins(
+      [
+        ...apps.map((a) => ({
+          category: a.type,
+          channel: a.channel,
+          deviceType: a.deviceType,
+          createdAt: a.createdAt,
+        })),
+        ...orders.map((o) => ({
+          category: 'orders' as const,
+          channel: o.channel,
+          deviceType: o.deviceType,
+          createdAt: o.createdAt,
+        })),
+      ],
+      days,
+    );
   }
 
   // A website photo (ID, selfie, trade-in). Every view is audited: it's identity data.
@@ -683,7 +906,7 @@ export class AdminService {
         agentName: r.agentId ? (agent.get(r.agentId) ?? '—') : null,
         status: r.status,
         idVerified: r.idVerified,
-        imei: r.imei,
+        imei: r.imeiLast4 ? maskImei(r.imeiLast4) : null,
         waitingDays:
           r.status === 'pending' ? Math.floor((now - r.createdAt.getTime()) / 86_400_000) : null,
         createdAt: r.createdAt.toISOString(),
@@ -946,6 +1169,7 @@ export class AdminService {
         reference: `${prefix}-${Math.random().toString(36).slice(2, 7).toUpperCase()}`,
         submittedAt: new Date(),
         source: dto.mode === 'self' ? 'self' : 'admin',
+        channel: 'portal',
         createdById: this.actorId(),
       },
     });
@@ -1336,13 +1560,14 @@ export class AdminService {
       dIds.length
         ? this.prisma.device.findMany({
             where: { id: { in: dIds } },
-            select: { id: true, name: true },
+            select: { id: true, name: true, specs: true },
           })
         : Promise.resolve([]),
     ]);
     return {
       userNames: new Map(users.map((u) => [u.id, u.fullName ?? 'Unknown'])),
       deviceNames: new Map(devices.map((d) => [d.id, d.name])),
+      deviceImages: new Map(devices.map((d) => [d.id, this.imageUrl(d.specs)])),
     };
   }
 }
@@ -1380,9 +1605,9 @@ const PERMISSIONS_FOR: Record<string, Array<string>> = {
 };
 
 const TYPE_LABELS: Record<string, string> = {
-  financing: 'Financing',
+  financing: 'Installments',
   lease: 'Lease',
-  trade_in: 'Trade-In',
+  trade_in: 'Trade-in',
 };
 
 // Business role label -> underlying norex enum role (reverse of ROLE_LABELS).

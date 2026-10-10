@@ -32,6 +32,10 @@ const schema = z.object({
   // Shared secret the website's server sends as X-Web-Key to submit guest
   // applications (docs/16). Unset = the intake endpoint refuses every request.
   WEB_INTAKE_KEY: z.string().min(24).optional(),
+
+  // Where device photos are served (the website, e.g. https://norexgambia.com). The
+  // catalog stores website paths like /devices/x.png; the portal needs full URLs.
+  DEVICE_IMAGE_BASE_URL: z.string().url().optional(),
 });
 
 export type AppConfig = z.infer<typeof schema>;

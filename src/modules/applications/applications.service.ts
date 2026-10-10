@@ -26,6 +26,7 @@ import { CreateApplicationDto } from './dto/create-application.dto';
 import { UpdateApplicationDto } from './dto/update-application.dto';
 import { DecisionDto } from './dto/decision.dto';
 import { ListApplicationsDto } from './dto/list-applications.dto';
+import type { Channel, DeviceType } from '../../common/http/client-channel';
 
 interface Requester {
   id: string;
@@ -114,11 +115,19 @@ export class ApplicationsService {
     return {};
   }
 
-  async create(tenantId: string, user: Requester, dto: CreateApplicationDto) {
+  async create(
+    tenantId: string,
+    user: Requester,
+    dto: CreateApplicationDto,
+    origin: { channel?: Channel; deviceType?: DeviceType | null } = {},
+  ) {
     return this.prisma.application.create({
       data: {
         tenantId,
         customerId: user.id,
+        source: 'self',
+        channel: origin.channel ?? 'api',
+        deviceType: origin.deviceType ?? null,
         type: dto.type,
         deviceId: dto.deviceId,
         financeMonths: dto.financeMonths,
