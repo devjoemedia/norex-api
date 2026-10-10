@@ -46,15 +46,20 @@ export class AllExceptionsFilter implements ExceptionFilter {
           : ((body as { message?: string | string[] }).message ?? exception.message);
     }
 
+    const requestId = req.id ?? req.headers['x-request-id'];
     if (status >= 500) {
-      this.logger.error(exception instanceof Error ? exception.stack : String(exception));
+      // The request id is what the caller sees, so the log line can be found from it.
+      this.logger.error(
+        `${req.method} ${req.originalUrl ?? req.url} requestId=${String(requestId)}\n` +
+          (exception instanceof Error ? exception.stack : String(exception)),
+      );
     }
 
     res.status(status).json({
       statusCode: status,
       error: HttpStatus[status] ?? 'Error',
       message,
-      requestId: req.id ?? req.headers['x-request-id'],
+      requestId,
     });
   }
 }

@@ -80,21 +80,26 @@ export class TenantMiddleware implements NestMiddleware {
     return map.get(key) ?? undefined;
   }
 
+  // Runs on every request, so these read only the columns they need: a new tenant
+  // column that isn't in the database yet can't take the whole API down.
   // Staff (X-Tenant) can work in a country before it launches.
   private async anyTenant(subdomain: string): Promise<string | null> {
-    const t = await this.prisma.tenant.findUnique({ where: { subdomain } });
+    const t = await this.prisma.tenant.findUnique({ where: { subdomain }, select: { id: true } });
     return t?.id ?? null;
   }
 
   private async activeTenant(subdomain: string): Promise<string | null> {
-    const t = await this.prisma.tenant.findUnique({ where: { subdomain } });
+    const t = await this.prisma.tenant.findUnique({
+      where: { subdomain },
+      select: { id: true, active: true },
+    });
     return t?.active ? t.id : null;
   }
 
   private async domainTenant(host: string): Promise<string | null> {
     const d = await this.prisma.tenantDomain.findUnique({
       where: { host },
-      include: { tenant: true },
+      select: { tenantId: true, tenant: { select: { active: true } } },
     });
     return d?.tenant.active ? d.tenantId : null;
   }
