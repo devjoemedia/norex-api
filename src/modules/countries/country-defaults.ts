@@ -24,7 +24,7 @@ export interface CountryDefaultsInput {
   startingRoundStepMinor: number;
 }
 
-// Gambia's FLEX (iStore Excel): 20% upfront, fee = max(cash × 7% | 13%, D2,000 | D3,500).
+// Gambia's FLEX (price-lock Excel): 20% upfront, fee = max(cash × 7% | 13%, D2,000 | D3,500).
 export const FLEX_TERMS = [
   { months: 3, premiumBps: 700, minFeeGmdMinor: 200_000 },
   { months: 6, premiumBps: 1300, minFeeGmdMinor: 350_000 },

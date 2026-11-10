@@ -2,8 +2,8 @@
  * Local-dev only: prints a 12-hour access token for an existing staff user, so the
  * admin portal can use VITE_API_DEV_TOKEN until its login screen exists.
  *
- *   DEV_TOKEN_EMAIL=ops@norex.gm npm run dev:token            # hq super admin
- *   DEV_TOKEN_EMAIL=cm@norex.sl DEV_TOKEN_TENANT=sierra-leone npm run dev:token
+ *   DEV_TOKEN_EMAIL=ops@norex.gm yarn dev:token            # hq super admin
+ *   DEV_TOKEN_EMAIL=cm@norex.sl DEV_TOKEN_TENANT=sierra-leone yarn dev:token
  */
 import 'dotenv/config';
 import { systemPrisma } from '../src/database/system-client';
@@ -23,7 +23,7 @@ async function main() {
 
   const tenant = await prisma.tenant.findUnique({ where: { subdomain } });
   if (!tenant)
-    throw new Error(`Tenant "${subdomain}" not found. Run \`npm run prisma:seed\` first.`);
+    throw new Error(`Tenant "${subdomain}" not found. Run \`yarn prisma:seed\` first.`);
   const user = await prisma.user.findFirst({
     where: { tenantId: tenant.id, email, isStaff: true, status: 'active' },
     include: { roles: true },

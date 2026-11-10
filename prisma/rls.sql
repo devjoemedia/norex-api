@@ -1,6 +1,6 @@
 -- Row-Level Security for every tenant-scoped table (docs/01, docs/15).
--- Idempotent. Apply after `prisma db push` and `npm run db:guards`:
---   npm run db:rls
+-- Idempotent. Apply after `prisma db push` and `yarn db:guards`:
+--   yarn db:rls
 --
 -- How the API uses it (src/database/prisma.service.ts): every query runs in a
 -- transaction that first sets, transaction-locally,

@@ -1,7 +1,7 @@
 /**
  * Demo device units (IMEI) for the admin portal.
  *
- *   BOOTSTRAP_ADMIN_TENANT=gambia npm run seed:device-units
+ *   BOOTSTRAP_ADMIN_TENANT=gambia yarn seed:device-units
  *
  * Generates realistic units: active handovers with mixed lock states + lock events,
  * plus in-stock and dispatched stock, so Devices, Device Lock and the recovery table
@@ -57,7 +57,7 @@ const serial = () => faker.string.alphanumeric(10).toUpperCase();
 async function main() {
   const tenant = await prisma.tenant.findUnique({ where: { subdomain: TENANT_SUB } });
   if (!tenant)
-    throw new Error(`Tenant "${TENANT_SUB}" not found. Run \`npm run prisma:seed\` first.`);
+    throw new Error(`Tenant "${TENANT_SUB}" not found. Run \`yarn prisma:seed\` first.`);
   if (!SECRETS.jwtSecret) throw new Error('Set JWT_SECRET (same value as the API) to seal IMEIs.');
   const tenantId = tenant.id;
   const imei = () => sealImei(tenantId, randomImei(), SECRETS);

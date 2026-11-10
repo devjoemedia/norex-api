@@ -108,7 +108,7 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
       );
     } else if (tables && tables.protected < tables.total) {
       this.logger.warn(
-        `Row-level security is off on ${tables.total - tables.protected} of ${tables.total} tenant tables. Run npm run db:rls.`,
+        `Row-level security is off on ${tables.total - tables.protected} of ${tables.total} tenant tables. Run yarn db:rls.`,
       );
     } else {
       this.logger.log(`Row-level security enforced on ${tables?.total ?? 0} tenant tables`);

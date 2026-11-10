@@ -1,11 +1,11 @@
 /**
- * Copies the website's catalog (norex-web/src/data, incl. the iStore Excel price lock)
+ * Copies the website's catalog (norex-web/src/data, incl. the Excel price lock)
  * into one API country so both show the same devices, slugs and storage prices.
  * Reads the website's files only; nothing in norex-web changes.
  *
- *   npm run import:web-catalog                 # dry run: prints what would change
- *   npm run import:web-catalog -- --apply      # writes (default country: gambia)
- *   IMPORT_TENANT=gambia npm run import:web-catalog -- --apply --archive-others
+ *   yarn import:web-catalog                 # dry run: prints what would change
+ *   yarn import:web-catalog --apply      # writes (default country: gambia)
+ *   IMPORT_TENANT=gambia yarn import:web-catalog --apply --archive-others
  *
  * Prices are the website's Gambia prices (GMD). Other countries get theirs through
  * the portal's catalog clone, then set their own.

@@ -538,7 +538,7 @@ model FinancePlanTerm {
   depositPctBps    Int // basis points, e.g. 2000 = 20%
   monthlyMarkupBps Int
   /// monthly_markup: markup % per month on the financed amount (legacy).
-  /// flat_on_cash: iStore FLEX — fee = max(cash × premiumBps, minPremiumMinor).
+  /// flat_on_cash: FLEX — fee = max(cash × premiumBps, minPremiumMinor).
   feeMode          FinanceFeeMode @default(monthly_markup)
   premiumBps       Int            @default(0) // flat_on_cash, e.g. 700 = 7%
   minPremiumMinor  Int            @default(0) // flat_on_cash minimum fee

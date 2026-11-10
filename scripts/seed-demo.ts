@@ -4,7 +4,7 @@
  * due/overdue/paid installments, recent successful payments (for the 7-day trend),
  * pending fulfilments (shown as "inspections scheduled"), and audit-log activity.
  *
- *   BOOTSTRAP_ADMIN_TENANT=gambia npm run seed:demo
+ *   BOOTSTRAP_ADMIN_TENANT=gambia yarn seed:demo
  *
  * Idempotent-ish: it wipes the tenant's demo transactional tables first, then
  * reseeds. Safe for a local dev database; do NOT run against production.
@@ -65,7 +65,7 @@ function makeType(): ApplicationType {
 
 async function main() {
   const tenant = await prisma.tenant.findUnique({ where: { subdomain: TENANT_SUB } });
-  if (!tenant) throw new Error(`Tenant "${TENANT_SUB}" not found. Run \`npm run prisma:seed\` first.`);
+  if (!tenant) throw new Error(`Tenant "${TENANT_SUB}" not found. Run \`yarn prisma:seed\` first.`);
   const tenantId = tenant.id;
   const currency = tenant.currency;
 

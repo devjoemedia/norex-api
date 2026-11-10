@@ -2,7 +2,7 @@
  * Reports money rows whose currency differs from their country's (docs/15). Rows
  * written before the currency guard existed can be wrong; new writes are refused.
  *
- *   npm run check:currency        # exits 1 if any mismatches are found
+ *   yarn check:currency        # exits 1 if any mismatches are found
  */
 import { systemPrisma } from '../src/database/system-client';
 

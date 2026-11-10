@@ -17,18 +17,20 @@ modules described in [`docs/`](../docs) (auth, catalog, applications, payments, 
 - **Structured logging** (pino) with PII redaction; Docker + docker-compose.
 
 ## Prerequisites
-Node 20, Docker.
+Node 20, Docker, Yarn 1.22.
+
+**Yarn** (Classic, pinned to `yarn@1.22.22`) is the only package manager. `yarn.lock` is the one lockfile; never add `package-lock.json` or `pnpm-lock.yaml`. A `preinstall` guard stops `npm install` / `pnpm install`.
 
 ## Run it
 ```bash
 cp .env.example .env
 docker compose up -d          # postgres, redis, minio
-npm install
-npm run prisma:generate
-npm run prisma:migrate        # creates tables (first run: name it "init")
+yarn install
+yarn prisma:generate
+yarn prisma:migrate        # creates tables (first run: name it "init")
 psql "$DATABASE_URL" -f prisma/rls.sql   # enable RLS policies (see docs/01)
-npm run prisma:seed           # two demo tenants
-npm run start:dev
+yarn prisma:seed           # two demo tenants
+yarn start:dev
 ```
 Then: `curl http://localhost:3001/api/health/ready`.
 
@@ -39,7 +41,7 @@ credentials from env, never logged):
 BOOTSTRAP_ADMIN_EMAIL=ops@norex.gm \
 BOOTSTRAP_ADMIN_PASSWORD='a-strong-password-min-12' \
 BOOTSTRAP_ADMIN_TENANT=gambia \
-npm run bootstrap:admin
+yarn bootstrap:admin
 ```
 Then sign in at `POST /api/auth/staff/login` to enroll TOTP and receive recovery
 codes. Re-run with `BOOTSTRAP_ADMIN_RESET=true` to reset the password + re-enroll TOTP.
@@ -58,8 +60,8 @@ prisma/              schema, seed, rls.sql
 
 ## Tests
 ```bash
-npm test          # unit tests (crypto, TOTP) — no infra needed
-npm run test:e2e  # integration tests against a REAL Postgres (needs Docker)
+yarn test          # unit tests (crypto, TOTP) — no infra needed
+yarn test:e2e  # integration tests against a REAL Postgres (needs Docker)
 ```
 The e2e suite (`test/auth.e2e-spec.ts`) starts a throwaway Postgres via
 **Testcontainers**, pushes the schema, boots the app, and exercises the full flows

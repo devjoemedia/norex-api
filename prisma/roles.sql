@@ -2,7 +2,7 @@
 -- owner/superuser, choosing a strong password:
 --   psql "$OWNER_DATABASE_URL" -v app_password='…' -f prisma/roles.sql
 -- Then point the API's DATABASE_URL at norex_app. Keep the owner URL for
--- `prisma db push`, `npm run db:guards`, `npm run db:rls` and the seed scripts.
+-- `prisma db push`, `yarn db:guards`, `yarn db:rls` and the seed scripts.
 
 SELECT format('CREATE ROLE norex_app LOGIN PASSWORD %L NOSUPERUSER NOBYPASSRLS', :'app_password')
 WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'norex_app') \gexec

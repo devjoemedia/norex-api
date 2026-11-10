@@ -1,6 +1,6 @@
 import { computeFlatInstallment, upfrontInRange } from './finance.calculator';
 
-// Golden values from iStore-Price-Lock.xlsm ("LOCK + FLEX": Price Used, Pay Today 20%,
+// Golden values from the price-lock workbook ("LOCK + FLEX": Price Used, Pay Today 20%,
 // 3M Total, 6M Total). GMD amounts × 100 = minor units.
 const EXCEL: Array<[price: number, total3: number, total6: number]> = [
   [23000, 25000, 26500], // iPhone 13 128GB — both minimums apply (2,000 / 3,500)

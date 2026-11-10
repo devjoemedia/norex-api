@@ -6,7 +6,7 @@
  *   BOOTSTRAP_ADMIN_EMAIL=ops@norex.gm \
  *   BOOTSTRAP_ADMIN_PASSWORD='a-strong-password' \
  *   BOOTSTRAP_ADMIN_TENANT=hq \
- *   npm run bootstrap:admin
+ *   yarn bootstrap:admin
  *
  * The created account still enrolls TOTP on first login (POST /api/auth/staff/login).
  */
@@ -34,7 +34,7 @@ async function main() {
 
   const tenant = await prisma.tenant.findUnique({ where: { subdomain } });
   if (!tenant) {
-    throw new Error(`Tenant "${subdomain}" not found. Run \`npm run prisma:seed\` first.`);
+    throw new Error(`Tenant "${subdomain}" not found. Run \`yarn prisma:seed\` first.`);
   }
 
   const existing = await prisma.user.findFirst({

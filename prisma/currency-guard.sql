@@ -1,7 +1,7 @@
 -- Currency integrity inside Postgres (docs/15): a money row's currency must equal
 -- its tenant's. The API checks this first (PrismaService currency guard); these
 -- triggers catch anything that bypasses it (scripts, raw SQL, nested writes).
--- Idempotent. Apply after `prisma db push`:  npm run db:guards
+-- Idempotent. Apply after `prisma db push`:  yarn db:guards
 
 CREATE OR REPLACE FUNCTION norex_check_currency() RETURNS trigger AS $$
 DECLARE

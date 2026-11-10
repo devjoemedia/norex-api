@@ -12,11 +12,11 @@ services:
     # build, as the Neon owner over DIRECT_URL: `db push` refuses data-loss changes and
     # the guard/RLS SQL files are idempotent (safe on every deploy).
     buildCommand: >-
-      npm ci --include=dev && npx prisma generate && npm run build &&
-      npx prisma db push --skip-generate &&
-      npx prisma db execute --url "$DIRECT_URL" --file prisma/currency-guard.sql &&
-      npx prisma db execute --url "$DIRECT_URL" --file prisma/rls.sql
-    startCommand: npm run start:prod
+      yarn install --frozen-lockfile --production=false && yarn prisma generate && yarn build &&
+      yarn prisma db push --skip-generate &&
+      yarn prisma db execute --url "$DIRECT_URL" --file prisma/currency-guard.sql &&
+      yarn prisma db execute --url "$DIRECT_URL" --file prisma/rls.sql
+    startCommand: yarn start:prod
     healthCheckPath: /api/health/ready
     envVars:
       - key: NODE_ENV

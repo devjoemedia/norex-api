@@ -6,20 +6,20 @@
 FROM node:20-alpine AS build
 RUN apk add --no-cache openssl
 WORKDIR /app
-COPY package*.json ./
-RUN npm ci
+COPY package.json yarn.lock ./
+RUN yarn install --frozen-lockfile
 COPY prisma ./prisma
-RUN npx prisma generate
+RUN yarn prisma generate
 COPY . .
-RUN npm run build
+RUN yarn build
 
 # --- runtime (non-root, minimal) ---
 FROM node:20-alpine AS runtime
 RUN apk add --no-cache openssl
 WORKDIR /app
 ENV NODE_ENV=production
-COPY package*.json ./
-RUN npm ci --omit=dev && npm cache clean --force
+COPY package.json yarn.lock ./
+RUN yarn install --frozen-lockfile --production && yarn cache clean
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/node_modules/.prisma ./node_modules/.prisma
 COPY --from=build /app/prisma ./prisma

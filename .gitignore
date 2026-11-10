@@ -6,3 +6,7 @@
 .env.*.local
 .DS_Store
 /prisma/*.db
+
+# Lockfiles from other package managers (this repo is Yarn only)
+package-lock.json
+pnpm-lock.yaml

@@ -5,6 +5,7 @@
   "license": "UNLICENSED",
   "private": true,
   "scripts": {
+    "preinstall": "node -e \"if(!(process.env.npm_config_user_agent||'').startsWith('yarn/')){console.error('This repo uses Yarn. Run: yarn install');process.exit(1)}\"",
     "build": "nest build",
     "start": "nest start",
     "start:dev": "nest start --watch",
@@ -47,6 +48,7 @@
     "helmet": "^8.0.0",
     "nestjs-pino": "^4.1.0",
     "otplib": "^12.0.1",
+    "pino": "^10.3.1",
     "pino-http": "^10.3.0",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1",
@@ -81,5 +83,9 @@
     "ts-node": "^10.9.2",
     "tsconfig-paths": "^4.2.0",
     "typescript": "^5.7.2"
+  },
+  "packageManager": "yarn@1.22.22",
+  "engines": {
+    "yarn": ">=1.22.22 <2"
   }
 }

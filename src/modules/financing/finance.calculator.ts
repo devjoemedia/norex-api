@@ -41,7 +41,7 @@ export function computeInstallment(i: InstallmentInput): Installment {
   };
 }
 
-// iStore FLEX rule (the website's plan maths, docs/04 + docs/15): the fee is a flat %
+// FLEX rule (the website's plan maths, docs/04 + docs/15): the fee is a flat %
 // of the CASH price with a minimum, independent of how much is paid upfront.
 export interface FlatInstallmentInput {
   cashPriceMinor: number;
